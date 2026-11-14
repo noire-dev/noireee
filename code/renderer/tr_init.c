@@ -888,7 +888,7 @@ void R_Register(void) {
 
 	r_autoExposure = ri.Cvar_Get("r_autoExposure", "1", CVAR_ARCHIVE);
 	r_autoExposureMin = ri.Cvar_Get("r_autoExposureMin", "-2.0", CVAR_CHEAT);
-	r_autoExposureMax = ri.Cvar_Get("r_autoExposureMax", "1.82", CVAR_CHEAT);
+	r_autoExposureMax = ri.Cvar_Get("r_autoExposureMax", "2.00", CVAR_CHEAT);
 
 	r_parallaxMapping = ri.Cvar_Get("r_parallaxMapping", "0", CVAR_ARCHIVE | CVAR_LATCH);
 	r_parallaxMapShadows = ri.Cvar_Get("r_parallaxMapShadows", "0", CVAR_ARCHIVE | CVAR_LATCH);
@@ -944,8 +944,8 @@ void R_Register(void) {
 	r_skyDuskScale = ri.Cvar_Get("r_skyDuskScale", "18.0", CVAR_ARCHIVE);
 
 	r_bloom = ri.Cvar_Get("r_bloom", "1", CVAR_ARCHIVE);
-	r_bloomIntensity = ri.Cvar_Get("r_bloomIntensity", "1.00", CVAR_ARCHIVE);
-	r_bloomThreshold = ri.Cvar_Get("r_bloomThreshold", "0.64", CVAR_ARCHIVE);
+	r_bloomIntensity = ri.Cvar_Get("r_bloomIntensity", "2.00", CVAR_ARCHIVE);
+	r_bloomThreshold = ri.Cvar_Get("r_bloomThreshold", "0.86", CVAR_ARCHIVE);
 	r_bloomKnee = ri.Cvar_Get("r_bloomKnee", "0.32", CVAR_ARCHIVE);
 	r_bloomBlur = ri.Cvar_Get("r_bloomBlur", "1", CVAR_ARCHIVE);
 
