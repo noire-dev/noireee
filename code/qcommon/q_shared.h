@@ -27,7 +27,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // A user mod should never modify this file
 
 #ifdef STANDALONE
-#define PRODUCT_NAME "noire-ioq3"
+#define PRODUCT_NAME "noireee"
 #define BASEGAME "game"
 #define CLIENT_WINDOW_TITLE "Noire's Mod"
 #define CLIENT_WINDOW_MIN_TITLE "nmod"

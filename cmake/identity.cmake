@@ -1,4 +1,4 @@
-set(PROJECT_NAME noire-ioq3)
+set(PROJECT_NAME NoireEe)
 set(PROJECT_VERSION 0.1)
 
 set(SERVER_NAME noiremod.ded)

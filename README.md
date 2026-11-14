@@ -10,7 +10,7 @@
 
 # The engine for Noire's Mod is based on ioquake3.
 
-# Noire-ioq3 key features:
+# NoireEe key features:
   * Bullet physics
   * JavaScript (duktape)
   * Full unicode with emoji (network, input, output, UI, player names, messages etc)
@@ -26,8 +26,8 @@
 
 # Compilation and installation
 For *nix,
-  1. `git clone git://github.com/ioquake/ioq3.git`
-  2. `cd ioq3`
+  1. `git clone git://github.com/ioquake/noireee.git`
+  2. `cd noireee`
   3. Install dependencies according to your operating system's instructions.  
      for apt-based systems, `sudo apt install cmake libsdl2-dev`
   4. `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
@@ -39,7 +39,7 @@ For Windows,
      https://visualstudio.microsoft.com/vs/community/
   2. Install CMake https://cmake.org/cmake/download
   3. Clone our git repository either using the command-line or a GUI tool:  
-      `git clone git://github.com/noire-dev/noire-ioq3.git`
+      `git clone git://github.com/noire-dev/noireee.git`
   4. Compile using Visual Studio by selecting our CMakeLists.txt and clicking Build.
   5. Or using the command-line: `cmake -S . -B build -G "Visual Studio 17 2022"`
   6. `cmake --build build --config Release`
@@ -47,8 +47,8 @@ For Windows,
 For macOS,
   1. Install XCode.
   2. Install CMake via homebrew https://brew.sh or your package manager of choice.
-  3. `git clone git://github.com/noire-dev/noire-ioq3.git`
-  4. `cd noire-ioq3`
+  3. `git clone git://github.com/noire-dev/noireee.git`
+  4. `cd noireee`
   5. `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
   6. `cmake --build build`
   7. Copy the resulting `ioquake3.app` in `/build/`
@@ -57,8 +57,8 @@ For macOS,
 For Emscripten,
   1. Follow the installation instructions for the Emscripten SDK including
      setting up the environment with emsdk_env. https://emscripten.org/
-  2. `git clone git://github.com/noire-dev/noire-ioq3.git`
-  3. `cd noire-ioq3`
+  2. `git clone git://github.com/noire-dev/noireee.git`
+  3. `cd noireee`
   4. `emcmake cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
   5. `cmake --build build`
   3. Copy or symlink your baseq3 pk3 files into the `build/Release/baseq3`
@@ -355,7 +355,7 @@ folder for distribution.
 
 # Credits
 
-Noire-ioq3 Maintainers
+NoireEe Maintainers
 
   * noire.dev <noirecx@gmail.com>
 
