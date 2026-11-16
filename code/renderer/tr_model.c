@@ -962,19 +962,11 @@ static bool R_LoadMD3(model_t* mod, int lod, void* buffer, int bufferSize, const
 ** RE_BeginRegistration
 */
 void RE_BeginRegistration(glconfig_t* glconfigOut) {
-	int i;
-
 	R_Init();
 
 	*glconfigOut = glConfig;
 
 	R_IssuePendingRenderCommands();
-
-	tr.visIndex = 0;
-	// force markleafs to regenerate
-	for(i = 0; i < MAX_VISCOUNTS; i++) {
-		tr.visClusters[i] = -2;
-	}
 
 	RE_ClearScene();
 

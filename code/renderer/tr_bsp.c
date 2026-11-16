@@ -1589,6 +1589,24 @@ static void R_LoadNodesAndLeafs(lump_t* nodeLump, lump_t* leafLump) {
 
 	// chain descendants
 	R_SetParent(s_worldData.nodes, NULL);
+
+	/*
+	 * Разметка листов с небесными поверхностями (SURF_SKY). Небо не
+	 * вырезается PVS/areamask (R_LeafVisible): купол — фон кадра, и если
+	 * кластер неба не попал в строку PVS или область закрыта areamask
+	 * (мини-мир 3D-скайбокса заперт areaportal'ами от игрока), с
+	 * включённым r_pvs небо пропадало целиком.
+	 */
+	for(i = numNodes, out = s_worldData.nodes + numNodes; i < s_worldData.numnodes; i++, out++) {
+		out->hasSkySurface = false;
+		for(j = 0; j < out->nummarksurfaces; j++) {
+			msurface_t* surf = s_worldData.surfaces + s_worldData.marksurfaces[out->firstmarksurface + j];
+			if(surf->shader && surf->shader->isSky) {
+				out->hasSkySurface = true;
+				break;
+			}
+		}
+	}
 }
 
 //=============================================================================

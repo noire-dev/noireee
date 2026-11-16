@@ -337,6 +337,8 @@ static bool R_CullDlightShadowNode(const mnode_t* node) {
 	return false;
 }
 
+static bool R_LeafVisible(const mnode_t* leaf, const byte* vis);
+
 static void R_RecursiveWorldNode_Direct(const dlightMask_t* sourceDlightBits) {
 	int s;
 	dlightMask_t dlightBits;
@@ -356,7 +358,7 @@ static void R_RecursiveWorldNode_Direct(const dlightMask_t* sourceDlightBits) {
 	tr.pc.c_leafs = tr.world->numsurfaces;
 }
 
-static void R_RecursiveWorldNode(mnode_t* node, uint32_t planeBits, const dlightMask_t* sourceDlightBits) {
+static void R_RecursiveWorldNode(mnode_t* node, uint32_t planeBits, const byte* vis, const dlightMask_t* sourceDlightBits) {
 	int i, r;
 	dlight_t* dl;
 	dlightMask_t dlightBits;
@@ -369,8 +371,6 @@ static void R_RecursiveWorldNode(mnode_t* node, uint32_t planeBits, const dlight
 		 */
 		if(tr.viewParms.flags & VPF_DLIGHTSHADOW) {
 			if(R_CullDlightShadowNode(node)) return;
-		} else {
-			if(node->visCounts[tr.visIndex] != tr.visCounts[tr.visIndex]) return;
 		}
 
 		/*
@@ -456,11 +456,17 @@ static void R_RecursiveWorldNode(mnode_t* node, uint32_t planeBits, const dlight
 
 		if(node->isLeaf) break;
 
-		R_RecursiveWorldNode(node->children[0], planeBits, &dlightBits);
+		R_RecursiveWorldNode(node->children[0], planeBits, vis, &dlightBits);
 
 		node = node->children[1];
 
 	} while(1);
+
+	/*
+	 * Видимость листа проверяется напрямую по PVS-строке кластера
+	 * (см. R_LeafVisible) — подсистема vis с разметкой нод удалена.
+	 */
+	if(!R_LeafVisible(node, vis)) return;
 
 	{
 		int c;
@@ -563,71 +569,42 @@ bool R_inPVS(const vec3_t p1, const vec3_t p2) {
 
 /*
 ===============
-R_MarkLeaves
+R_LeafVisible
 
-Mark the leaves and nodes that are in the PVS for the current
-cluster
+Проверка видимости листа напрямую по PVS-строке кластера камеры
+(подсистема vis — R_MarkLeaves/visCounts/visClusters — удалена: она
+не работала и тормозила, разметка нод больше не нужна).
+
+Правила:
+  - проход dlight-теней вообще не использует PVS/areamask (видимость
+    определяет объём света);
+  - листы с небесными поверхностями (SURF_SKY) видны ВСЕГДА: купол —
+    фон кадра, и если кластер неба не попал в строку PVS (мини-мир
+    3D-скайбокса, портальные камеры), с r_pvs 1 небо пропадало целиком;
+  - areamask — это маска областей, открытых для камеры ИГРОКА, поэтому
+    она не применяется к проходу 3D-скайбокса (VPF_SKYBOX3D): его камера
+    стоит в запертой areaportal'ами копии мира, области которой в
+    areamask игрока закрыты, — из-за этого проход 1 не рисовал ничего
+    и небо исчезало.
 ===============
 */
-static void R_MarkLeaves(void) {
-	const byte* vis;
-	mnode_t *leaf, *parent;
-	int i;
+static bool R_LeafVisible(const mnode_t* leaf, const byte* vis) {
 	int cluster;
 
-	// lockpvs lets designers walk around to determine the
-	// extent of the current pvs
-	if(r_lockpvs->integer) {
-		return;
-	}
+	if(tr.viewParms.flags & VPF_DLIGHTSHADOW) return true;
 
-	// current viewcluster
-	leaf = R_PointInLeaf(tr.viewParms.pvsOrigin);
+	if(leaf->hasSkySurface) return true;
+
 	cluster = leaf->cluster;
+	if(cluster < 0 || cluster >= tr.world->numClusters) return false;
 
-	// if the cluster is the same and the area visibility matrix
-	// hasn't changed, we don't need to mark everything again
+	if(vis && !(vis[cluster >> 3] & (1 << (cluster & 7)))) return false;
 
-	for(i = 0; i < MAX_VISCOUNTS; i++) {
-		// if the areamask was modified, invalidate all visclusters
-		// this caused doors to open into undrawn areas
-		if(tr.refdef.areamaskModified) {
-			tr.visClusters[i] = -2;
-		} else if(tr.visClusters[i] == cluster) {
-			tr.visIndex = i;
-			return;
-		}
+	if(!(tr.viewParms.flags & VPF_SKYBOX3D)) {
+		if(tr.refdef.areamask[leaf->area >> 3] & (1 << (leaf->area & 7))) return false;
 	}
 
-	tr.visIndex = (tr.visIndex + 1) % MAX_VISCOUNTS;
-	tr.visCounts[tr.visIndex]++;
-	tr.visClusters[tr.visIndex] = cluster;
-
-	vis = R_ClusterPVS(tr.visClusters[tr.visIndex]);
-
-	for(i = 0, leaf = tr.world->nodes; i < tr.world->numnodes; i++, leaf++) {
-		cluster = leaf->cluster;
-		if(cluster < 0 || cluster >= tr.world->numClusters) {
-			continue;
-		}
-
-		// check general pvs
-		if(vis && !(vis[cluster >> 3] & (1 << (cluster & 7)))) {
-			continue;
-		}
-
-		// check for door connection
-		if((tr.refdef.areamask[leaf->area >> 3] & (1 << (leaf->area & 7)))) {
-			continue;  // not visible
-		}
-
-		parent = leaf;
-		do {
-			if(parent->visCounts[tr.visIndex] == tr.visCounts[tr.visIndex]) break;
-			parent->visCounts[tr.visIndex] = tr.visCounts[tr.visIndex];
-			parent = parent->parent;
-		} while(parent);
-	}
+	return true;
 }
 
 /*
@@ -638,14 +615,14 @@ R_AddWorldSurfaces
 void R_AddWorldSurfaces(void) {
 	uint32_t planeBits;
 	dlightMask_t dlightBits;
+	const byte* vis;
+	vec3_t pvsOrigin;
 
 	if(tr.refdef.rdflags & RDF_NOWORLDMODEL) return;
+	if(!tr.world) return;
 
 	tr.currentEntityNum = REFENTITYNUM_WORLD;
 	tr.shiftedEntityNum = tr.currentEntityNum << QSORT_REFENTITYNUM_SHIFT;
-
-	// determine which leaves are in the PVS / areamask
-	if(!(tr.viewParms.flags & VPF_DLIGHTSHADOW) && r_pvs->integer) R_MarkLeaves();
 
 	// clear out the visible min/max
 	ClearBounds(tr.viewParms.visBounds[0], tr.viewParms.visBounds[1]);
@@ -661,8 +638,38 @@ void R_AddWorldSurfaces(void) {
 		for(i = 0; i < tr.refdef.num_dlights; i++) DlightMask_Set(&dlightBits, i);
 	}
 
+	/*
+	 * PVS без подсистемы vis: строка видимости вычисляется один раз на
+	 * проход — мир, 3D-скайбокс, отражения, кубмапы и тени имеют свою
+	 * pvsOrigin, и бит кластера проверяется прямо при обходе BSP
+	 * (R_LeafVisible). Прежний R_MarkLeaves() при каждом новом кластере
+	 * сканировал ВСЕ ноды карты и поднимал visCounts до корня; кэша из
+	 * MAX_VISCOUNTS слотов не хватало на десятки проходов за кадр, и
+	 * разметка повторялась несколько раз за кадр.
+	 */
+	vis = NULL;
+	if(r_pvs->integer && !(tr.viewParms.flags & VPF_DLIGHTSHADOW)) {
+		int lockIndex = (tr.viewParms.flags & VPF_SKYBOX3D) ? 1 : 0;
+
+		// lockpvs lets designers walk around to determine the
+		// extent of the current pvs
+		if(r_lockpvs->integer) {
+			if(!tr.lockPvsValid[lockIndex]) {
+				VectorCopy(tr.viewParms.pvsOrigin, tr.lockPvsOrigin[lockIndex]);
+				tr.lockPvsValid[lockIndex] = true;
+			}
+			VectorCopy(tr.lockPvsOrigin[lockIndex], pvsOrigin);
+		} else {
+			tr.lockPvsValid[0] = false;
+			tr.lockPvsValid[1] = false;
+			VectorCopy(tr.viewParms.pvsOrigin, pvsOrigin);
+		}
+
+		vis = R_ClusterPVS(R_PointInLeaf(pvsOrigin)->cluster);
+	}
+
 	if(r_pvs->integer)
-		R_RecursiveWorldNode(tr.world->nodes, planeBits, &dlightBits);
+		R_RecursiveWorldNode(tr.world->nodes, planeBits, vis, &dlightBits);
 	else
 		R_RecursiveWorldNode_Direct(&dlightBits);
 

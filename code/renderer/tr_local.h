@@ -63,7 +63,7 @@ typedef unsigned int vaoCacheGlIndex_t;
 
 #define MAX_FBOS 64
 #define MAX_RENDER_DLIGHTS (MAX_DLIGHTS * 8)  // aggregate backing storage for multiple views per frame
-#define MAX_VISCOUNTS 5
+#define MAX_VIEWS_PVS 2  // слоты lockpvs: 0 — обычные камеры, 1 — проход 3D-скайбокса
 #define MAX_VAOS 4096
 
 typedef struct cubemap_s {
@@ -751,7 +751,6 @@ typedef struct {
 
 	// 1 bits will prevent the associated area from rendering at all
 	byte areamask[MAX_MAP_AREA_BYTES];
-	bool areamaskModified;  // true if areamask changed since last scene
 
 	double floatTime;  // tr.refdef.time / 1000.0
 
@@ -1229,9 +1228,9 @@ typedef struct msurface_s {
 typedef struct mnode_s {
 	// common with leaf and node
 	bool isLeaf;
-	int contents;                  // -1 for nodes, to differentiate from leafs
-	int visCounts[MAX_VISCOUNTS];  // node needs to be traversed if current
-	vec3_t mins, maxs;             // for bounding box culling
+	int contents;         // -1 for nodes, to differentiate from leafs
+	bool hasSkySurface;   // лист содержит SURF_SKY — не вырезается PVS/areamask (небо — фон кадра)
+	vec3_t mins, maxs;    // for bounding box culling
 	vec3_t surfMins, surfMaxs;
 	struct mnode_s* parent;
 
@@ -1611,9 +1610,10 @@ typedef struct {
 typedef struct {
 	bool registered;  // cleared at shutdown, set at beginRegistration
 
-	int visIndex;
-	int visClusters[MAX_VISCOUNTS];
-	int visCounts[MAX_VISCOUNTS];  // incremented every time a new vis cluster is entered
+	// lockpvs: точка, по которой заморожен PVS, когда дизайнер включает r_lockpvs.
+	// Отдельный слот для прохода 3D-скайбокса — у него своя камера в мини-мире.
+	bool lockPvsValid[MAX_VIEWS_PVS];
+	vec3_t lockPvsOrigin[MAX_VIEWS_PVS];
 
 	int frameCount;  // incremented every frame
 	int sceneCount;  // incremented every scene

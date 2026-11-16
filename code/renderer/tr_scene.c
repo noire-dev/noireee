@@ -825,24 +825,10 @@ void RE_BeginScene(const refdef_t* fd) {
 	tr.refdef.time = fd->time;
 	tr.refdef.rdflags = fd->rdflags;
 
-	// copy the areamask data over and note if it has changed, which
-	// will force a reset of the visible leafs even if the view hasn't moved
-	tr.refdef.areamaskModified = false;
+	// копируем areamask: он проверяется по ходу обхода BSP (R_LeafVisible),
+	// так что изменения (открылась дверь и т.п.) применяются сразу
 	if(!(tr.refdef.rdflags & RDF_NOWORLDMODEL)) {
-		int areaDiff;
-		int i;
-
-		// compare the area bits
-		areaDiff = 0;
-		for(i = 0; i < MAX_MAP_AREA_BYTES / 4; i++) {
-			areaDiff |= ((int*)tr.refdef.areamask)[i] ^ ((int*)fd->areamask)[i];
-			((int*)tr.refdef.areamask)[i] = ((int*)fd->areamask)[i];
-		}
-
-		if(areaDiff) {
-			// a door just opened or something
-			tr.refdef.areamaskModified = true;
-		}
+		Com_Memcpy(tr.refdef.areamask, fd->areamask, MAX_MAP_AREA_BYTES);
 	}
 
 	tr.refdef.sunDir[3] = 0.0f;
