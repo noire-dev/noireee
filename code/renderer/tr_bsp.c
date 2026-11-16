@@ -1424,23 +1424,96 @@ static void R_LoadSurfaces(lump_t* surfs, lump_t* verts, lump_t* indexLump) {
 
 /*
 =================
+R_BuildBrushBounds
+
+Build an AABB from the axial planes of one BSP brush. Q3 BSP stores the
+axial bevel planes on every brush; using the plane equations instead of
+model bounds keeps disconnected brushes in func_volume and func_display as
+separate regions.
+=================
+*/
+static bool R_BuildBrushBounds(const dbrush_t* brushes, int brushCount,
+                               const dbrushside_t* sides, int sideCount,
+                               int brushIndex, vec3_t bounds[2]) {
+	const dbrush_t* brush;
+	int firstSide, numSides, i, axis;
+	bool haveMin[3] = { false, false, false };
+	bool haveMax[3] = { false, false, false };
+
+	if(brushIndex < 0 || brushIndex >= brushCount) return false;
+	brush = &brushes[brushIndex];
+	firstSide = LittleLong(brush->firstSide);
+	numSides = LittleLong(brush->numSides);
+	if(firstSide < 0 || numSides < 6 || firstSide > sideCount - numSides) return false;
+
+	for(axis = 0; axis < 3; axis++) {
+		bounds[0][axis] = -1.0e30f;
+		bounds[1][axis] = 1.0e30f;
+	}
+
+	for(i = 0; i < numSides; i++) {
+		int planeNum = LittleLong(sides[firstSide + i].planeNum);
+		const cplane_t* plane;
+		float coord;
+
+		if(planeNum < 0 || planeNum >= s_worldData.numplanes) return false;
+		plane = &s_worldData.planes[planeNum];
+		// Не полагаемся на PlaneTypeForNormal: он может считать -X/-Y/-Z
+		// неосевыми. Проверяем сам нормальный вектор.
+		for(axis = 0; axis < 3; axis++) {
+			int other1 = (axis + 1) % 3;
+			int other2 = (axis + 2) % 3;
+			float normal = plane->normal[axis];
+			if((normal < 0.999f && normal > -0.999f) ||
+			   plane->normal[other1] < -0.001f || plane->normal[other1] > 0.001f ||
+			   plane->normal[other2] < -0.001f || plane->normal[other2] > 0.001f) continue;
+			coord = plane->dist / normal;
+			if(normal > 0.0f) {
+				if(coord < bounds[1][axis]) bounds[1][axis] = coord;
+				haveMax[axis] = true;
+			} else {
+				if(coord > bounds[0][axis]) bounds[0][axis] = coord;
+				haveMin[axis] = true;
+			}
+		}
+	}
+
+	for(axis = 0; axis < 3; axis++) {
+		if(!haveMin[axis] || !haveMax[axis] || bounds[0][axis] > bounds[1][axis]) return false;
+	}
+	return true;
+}
+
+/*
+=================
 R_LoadSubmodels
 =================
 */
-static void R_LoadSubmodels(lump_t* l) {
+static void R_LoadSubmodels(lump_t* l, lump_t* brushesLump, lump_t* brushSidesLump) {
 	dmodel_t* in;
+	dbrush_t* brushes;
+	dbrushside_t* sides;
 	bmodel_t* out;
-	int i, j, count;
+	int i, j, count, brushCount, sideCount;
 
 	in = (void*)(fileBase + l->fileofs);
 	if(l->filelen % sizeof(*in)) ri.Error(ERR_DROP, "LoadMap: funny lump size in %s", s_worldData.name);
 	count = l->filelen / sizeof(*in);
+
+	brushes = (void*)(fileBase + brushesLump->fileofs);
+	if(brushesLump->filelen % sizeof(*brushes)) ri.Error(ERR_DROP, "LoadMap: funny brush lump size in %s", s_worldData.name);
+	brushCount = brushesLump->filelen / sizeof(*brushes);
+
+	sides = (void*)(fileBase + brushSidesLump->fileofs);
+	if(brushSidesLump->filelen % sizeof(*sides)) ri.Error(ERR_DROP, "LoadMap: funny brushside lump size in %s", s_worldData.name);
+	sideCount = brushSidesLump->filelen / sizeof(*sides);
 
 	s_worldData.numBModels = count;
 	s_worldData.bmodels = out = ri.Hunk_Alloc(count * sizeof(*out), h_low);
 
 	for(i = 0; i < count; i++, in++, out++) {
 		model_t* model;
+		int firstBrush, numBrushes;
 
 		model = R_AllocModel();
 
@@ -1460,6 +1533,28 @@ static void R_LoadSubmodels(lump_t* l) {
 
 		out->firstSurface = LittleLong(in->firstSurface);
 		out->numSurfaces = LittleLong(in->numSurfaces);
+		firstBrush = LittleLong(in->firstBrush);
+		numBrushes = LittleLong(in->numBrushes);
+		out->firstBrush = firstBrush;
+		out->numBrushes = 0;
+		out->brushBounds = NULL;
+
+		if(firstBrush >= 0 && numBrushes > 0 && firstBrush <= brushCount - numBrushes) {
+			out->numBrushes = numBrushes;
+			out->brushBounds = ri.Hunk_Alloc(numBrushes * sizeof(*out->brushBounds), h_low);
+			for(j = 0; j < numBrushes; j++) {
+				if(!R_BuildBrushBounds(brushes, brushCount, sides, sideCount, firstBrush + j, out->brushBounds[j])) {
+					int axis;
+					// Отрицательные границы помечают только этот brush как invalid.
+					for(axis = 0; axis < 3; axis++) {
+						out->brushBounds[j][0][axis] = 1.0e30f;
+						out->brushBounds[j][1][axis] = -1.0e30f;
+					}
+				}
+			}
+		} else if(numBrushes > 0) {
+			ri.Printf(PRINT_WARNING, "WARNING: inline model *%d has invalid brush range; func_volume/func_display will use model bounds\n", i);
+		}
 
 		if(i == 0) {
 			// Add this for limiting VAO surface creation
@@ -2055,6 +2150,204 @@ static void R_ParseEntityVec3(const char* s, vec3_t out) {
 	sscanf(s, "%f %f %f", &out[0], &out[1], &out[2]);
 }
 
+static void R_ParseEntityAngles(int numKeys, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], vec3_t angles) {
+	const char* v;
+
+	VectorClear(angles);
+	v = R_EntityValue(numKeys, keys, values, "angles");
+	if(v) {
+		R_ParseEntityVec3(v, angles);
+		return;
+	}
+
+	v = R_EntityValue(numKeys, keys, values, "angle");
+	if(!v) return;
+
+	// Quake map convention: `angle` is yaw; -1 / -2 are up / down.
+	if(atof(v) == -1.0f) angles[0] = -90.0f;
+	else if(atof(v) == -2.0f) angles[0] = 90.0f;
+	else angles[1] = atof(v);
+}
+
+static int R_FindInlineModelHandle(int modelIndex) {
+	int i;
+	if(modelIndex <= 0 || modelIndex >= s_worldData.numBModels) return 0;
+	for(i = 1; i < tr.numModels; i++) {
+		model_t* model = tr.models[i];
+		if(model && model->type == MOD_BRUSH && model->bmodel == &s_worldData.bmodels[modelIndex]) return model->index;
+	}
+	return 0;
+}
+
+/*
+=================
+R_GetPortalInteriorPointFromOtherFaces
+
+Find a point on the solid side of a portal face using the other visible faces
+of the inline brush model. Portal/caulk-only models may not expose those faces;
+in that case the caller falls back to the BSP submodel bounds center.
+=================
+*/
+static bool R_GetPortalInteriorPointFromOtherFaces(const bmodel_t* bmodel, int excludedSurface, vec3_t point) {
+	float totalArea = 0.0f;
+	int i;
+
+	VectorClear(point);
+	for(i = 0; i < bmodel->numSurfaces; i++) {
+		msurface_t* surf;
+		srfBspSurface_t* bsp;
+		int j;
+
+		if(i == excludedSurface) continue;
+		surf = &s_worldData.surfaces[bmodel->firstSurface + i];
+		if(!surf->shader || surf->shader->isPortal || !surf->data) continue;
+		if(!(*(surf->data) == SF_FACE || *(surf->data) == SF_GRID || *(surf->data) == SF_TRIANGLES)) continue;
+
+		bsp = (srfBspSurface_t*)surf->data;
+		if(!bsp->indexes || bsp->numIndexes < 3) continue;
+
+		// Use area-weighted triangle centers so tessellation density cannot
+		// pull the interior reference toward one particularly subdivided face.
+		for(j = 0; j + 2 < bsp->numIndexes; j += 3) {
+			vec3_t edge1, edge2, cross, triCenter;
+			int i0 = bsp->indexes[j + 0];
+			int i1 = bsp->indexes[j + 1];
+			int i2 = bsp->indexes[j + 2];
+			float area;
+
+			if(i0 < 0 || i1 < 0 || i2 < 0 || i0 >= bsp->numVerts || i1 >= bsp->numVerts || i2 >= bsp->numVerts) continue;
+			VectorSubtract(bsp->verts[i1].xyz, bsp->verts[i0].xyz, edge1);
+			VectorSubtract(bsp->verts[i2].xyz, bsp->verts[i0].xyz, edge2);
+			CrossProduct(edge1, edge2, cross);
+			area = VectorLength(cross) * 0.5f;
+			if(area <= 0.000001f) continue;
+
+			VectorAdd(bsp->verts[i0].xyz, bsp->verts[i1].xyz, triCenter);
+			VectorAdd(triCenter, bsp->verts[i2].xyz, triCenter);
+			VectorScale(triCenter, 1.0f / 3.0f, triCenter);
+			VectorMA(point, area, triCenter, point);
+			totalArea += area;
+		}
+	}
+
+	if(totalArea <= 0.000001f) return false;
+	VectorScale(point, 1.0f / totalArea, point);
+	return true;
+}
+
+static bool R_GetPortalFaceForModel(int modelIndex, portalInfo_t* portal) {
+	bmodel_t* bmodel;
+	int i;
+	vec3_t boundsCenter;
+
+	if(modelIndex <= 0 || modelIndex >= s_worldData.numBModels) return false;
+	bmodel = &s_worldData.bmodels[modelIndex];
+
+	// The dmodel bounds include the complete inline brush extent, including
+	// sides compiled with caulk/nodraw and therefore absent from draw surfaces.
+	// This is essential for thin portal brushes: the portal face may be the
+	// only rendered face, in which case averaging rendered vertices puts the
+	// supposed brush center exactly on the portal plane (and yields distance 0).
+	VectorAdd(bmodel->bounds[0], bmodel->bounds[1], boundsCenter);
+	VectorScale(boundsCenter, 0.5f, boundsCenter);
+
+	for(i = 0; i < bmodel->numSurfaces; i++) {
+		msurface_t* surf = &s_worldData.surfaces[bmodel->firstSurface + i];
+		vec3_t faceCenter, planeNormal, faceToBrush, otherFacesCenter;
+		float normalLength, side;
+		bool hasOtherFacesCenter;
+		int j;
+
+		if(!surf->shader || !surf->shader->isPortal) continue;
+		if(!(surf->cullinfo.type & CULLINFO_PLANE)) continue;
+		normalLength = VectorLength(surf->cullinfo.plane.normal);
+		if(normalLength <= 0.0001f) continue;
+		VectorScale(surf->cullinfo.plane.normal, 1.0f / normalLength, planeNormal);
+
+		// Use the actual face vertices for the aperture center, not the center
+		// of its axis-aligned bounding box (which can be offset on rotated faces).
+		if(surf->data && (*(surf->data) == SF_FACE || *(surf->data) == SF_GRID || *(surf->data) == SF_TRIANGLES)) {
+			srfBspSurface_t* bsp = (srfBspSurface_t*)surf->data;
+			float totalArea = 0.0f;
+
+			if(bsp->numVerts <= 0) continue;
+			VectorClear(faceCenter);
+
+			// Area-weighted triangle centroid is the actual center of the planar
+			// portal face even when its BSP vertices are not evenly distributed.
+			for(j = 0; bsp->indexes && j + 2 < bsp->numIndexes; j += 3) {
+				vec3_t edge1, edge2, cross, triCenter;
+				int i0 = bsp->indexes[j + 0];
+				int i1 = bsp->indexes[j + 1];
+				int i2 = bsp->indexes[j + 2];
+				float area;
+
+				if(i0 < 0 || i1 < 0 || i2 < 0 || i0 >= bsp->numVerts || i1 >= bsp->numVerts || i2 >= bsp->numVerts) continue;
+				VectorSubtract(bsp->verts[i1].xyz, bsp->verts[i0].xyz, edge1);
+				VectorSubtract(bsp->verts[i2].xyz, bsp->verts[i0].xyz, edge2);
+				CrossProduct(edge1, edge2, cross);
+				area = VectorLength(cross) * 0.5f;
+				if(area <= 0.000001f) continue;
+
+				VectorAdd(bsp->verts[i0].xyz, bsp->verts[i1].xyz, triCenter);
+				VectorAdd(triCenter, bsp->verts[i2].xyz, triCenter);
+				VectorScale(triCenter, 1.0f / 3.0f, triCenter);
+				VectorMA(faceCenter, area, triCenter, faceCenter);
+				totalArea += area;
+			}
+
+			if(totalArea > 0.000001f) {
+				VectorScale(faceCenter, 1.0f / totalArea, faceCenter);
+			} else {
+				for(j = 0; j < bsp->numVerts; j++) VectorAdd(faceCenter, bsp->verts[j].xyz, faceCenter);
+				VectorScale(faceCenter, 1.0f / (float)bsp->numVerts, faceCenter);
+			}
+		} else {
+			faceCenter[0] = (surf->cullinfo.bounds[0][0] + surf->cullinfo.bounds[1][0]) * 0.5f;
+			faceCenter[1] = (surf->cullinfo.bounds[0][1] + surf->cullinfo.bounds[1][1]) * 0.5f;
+			faceCenter[2] = (surf->cullinfo.bounds[0][2] + surf->cullinfo.bounds[1][2]) * 0.5f;
+		}
+
+		// Snap the centroid back to the exact BSP face plane to remove vertex
+		// averaging error before using it as the portal transform origin.
+		{
+			float planeDist = surf->cullinfo.plane.dist / normalLength;
+			float offPlane = DotProduct(faceCenter, planeNormal) - planeDist;
+			VectorMA(faceCenter, -offPlane, planeNormal, faceCenter);
+		}
+
+		// Prefer a witness from the other actual brush faces when available.
+		// If the map compiler omitted those faces (for example, they use caulk),
+		// use the full dmodel bounds center instead. Do not average portal-face
+		// vertices into this point: for a portal-only draw model that collapses
+		// the center onto the very plane whose side we are trying to determine.
+		hasOtherFacesCenter = R_GetPortalInteriorPointFromOtherFaces(bmodel, i, otherFacesCenter);
+		if(hasOtherFacesCenter) VectorSubtract(otherFacesCenter, faceCenter, faceToBrush);
+		else VectorSubtract(boundsCenter, faceCenter, faceToBrush);
+		side = DotProduct(faceToBrush, planeNormal);
+
+		// The other-face witness can be ambiguous for multi-brush models. Fall
+		// back to the bounds center if that provides a clear side of the plane.
+		if(fabs(side) <= 0.01f) {
+			VectorSubtract(boundsCenter, faceCenter, faceToBrush);
+			side = DotProduct(faceToBrush, planeNormal);
+		}
+		if(fabs(side) <= 0.01f) {
+			ri.Printf(PRINT_WARNING, "portal face in brush model *%d has ambiguous inward side (signed center distance %.3f); ignored\n", modelIndex, side);
+			continue;
+		}
+
+		// localNormal points into the brush, from the portal face toward the
+		// interior witness selected above.
+		if(side < 0.0f) VectorScale(planeNormal, -1.0f, portal->localNormal);
+		else VectorCopy(planeNormal, portal->localNormal);
+		VectorCopy(faceCenter, portal->localOrigin);
+		return true;
+	}
+
+	return false;
+}
+
 /*
 =================
 R_LoadMapEntitySystems
@@ -2068,8 +2361,10 @@ R_LoadMapEntitySystems
                 несёт бит VOLUME_SKY).
   misc_skybox — 3D-скайбокс: "origin" "x y z", "scale" "n"
                 проход 1 рисует мир камерой skyboxOrigin + playerOrigin / scale
-  func_volume — "spawnflags" "n", границы браша из "model" "*N"
-  func_display— "spawnflags" "n", "whitelist" "0/1", границы из "model" "*N"
+  func_volume — "spawnflags" "n", "addIfFull" "0/1"; каждый brush из model "*N" становится отдельной областью;
+                по умолчанию поверхности назначаются при любом пересечении brush-области,
+                addIfFull 1 включает прежнее правило (вся поверхность строго внутри)
+  func_display— "spawnflags" "n", "whitelist" "0/1", "hideSky" "0/1"; каждый brush из model "*N" становится отдельной областью
 =================
 */
 void R_LoadMapEntitySystems(void) {
@@ -2078,7 +2373,7 @@ void R_LoadMapEntitySystems(void) {
 	static char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME];
 	static char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME];
 	int numKeys, i, pass;
-	int numVolumes, numDisplays;
+	int numVolumes, numDisplays, numPortals;
 
 	w = &s_worldData;
 
@@ -2087,11 +2382,13 @@ void R_LoadMapEntitySystems(void) {
 
 	numVolumes = 0;
 	numDisplays = 0;
+	numPortals = 0;
+	w->numPortals = 0;
+	w->portals = NULL;
 
 	w->hasSkybox = false;
 	w->skyboxScale = 16.0f;
 	VectorClear(w->skyboxOrigin);
-	w->hasSkyGroupBounds = false;
 
 	// базовая маска-чёрный список объёмов вне display-объёмов; worldspawn может
 	// переопределить ключом "volumeflags". По умолчанию VOLUME_SKY (0x2) — мир
@@ -2104,6 +2401,7 @@ void R_LoadMapEntitySystems(void) {
 		if(pass == 1) {
 			if(numVolumes > 0) w->volumes = ri.Hunk_Alloc(numVolumes * sizeof(volumeInfo_t), h_low);
 			if(numDisplays > 0) w->displays = ri.Hunk_Alloc(numDisplays * sizeof(displayInfo_t), h_low);
+			if(numPortals > 0) w->portals = ri.Hunk_Alloc(numPortals * sizeof(portalInfo_t), h_low);
 		}
 
 		while((numKeys = R_ParseEntityKeys(&p, keys, values)) >= 0) {
@@ -2138,74 +2436,171 @@ void R_LoadMapEntitySystems(void) {
 			}
 
 			if(pass == 0) {
-				// первый проход — только подсчёт для точного Hunk_Alloc
-				if(!Q_stricmp(classname, "func_volume"))
-					numVolumes++;
-				else if(!Q_stricmp(classname, "func_display"))
-					numDisplays++;
+				// первый проход — подсчёт ёмкости массивов для Hunk_Alloc
+				if(!Q_stricmp(classname, "func_volume")) {
+					const char* modelValue = R_EntityValue(numKeys, keys, values, "model");
+					int modelIndex = (modelValue && modelValue[0] == '*') ? atoi(modelValue + 1) : 0;
+					int brushRegions = (modelIndex > 0 && modelIndex < w->numBModels) ? w->bmodels[modelIndex].numBrushes : 0;
+					// One func_volume may contain several disconnected collision brushes.
+					// Reserve one region per brush; if brush data is unavailable, reserve
+					// one slot for the legacy model-bounds fallback (or a warning).
+					numVolumes += brushRegions > 0 ? brushRegions : 1;
+				} else if(!Q_stricmp(classname, "func_display")) {
+					const char* modelValue = R_EntityValue(numKeys, keys, values, "model");
+					int modelIndex = (modelValue && modelValue[0] == '*') ? atoi(modelValue + 1) : 0;
+					if(modelIndex > 0 && modelIndex < w->numBModels) {
+						// Один func_display может состоять из нескольких BSP-brushes.
+						// Для каждого brush создаём отдельную область; если brush-данных
+						// нет, оставляем совместимость со старой общей model AABB.
+						int brushRegions = w->bmodels[modelIndex].numBrushes;
+						numDisplays += brushRegions > 0 ? brushRegions : 1;
+					} else {
+						// Оставляем слот для предупреждения во втором проходе парсера.
+						numDisplays++;
+					}
+				} else if(!Q_stricmp(classname, "func_portal_in") || !Q_stricmp(classname, "func_portal_out"))
+					numPortals++;
 				continue;
 			}
 
 			if(!Q_stricmp(classname, "func_volume") && w->numVolumes < numVolumes) {
-				volumeInfo_t* vo = &w->volumes[w->numVolumes];
-				int modelIndex;
-
-				memset(vo, 0, sizeof(*vo));
+				int modelIndex, brushIndex, addedRegions = 0;
+				unsigned spawnflags;
+				bool addIfFull;
+				bmodel_t* volumeModel;
 
 				v = R_EntityValue(numKeys, keys, values, "model");
 				modelIndex = (v && v[0] == '*') ? atoi(v + 1) : 0;
-				if(modelIndex > 0 && modelIndex < w->numBModels) {
-					VectorCopy(w->bmodels[modelIndex].bounds[0], vo->bounds[0]);
-					VectorCopy(w->bmodels[modelIndex].bounds[1], vo->bounds[1]);
-				} else {
+				if(modelIndex <= 0 || modelIndex >= w->numBModels) {
 					ri.Printf(PRINT_WARNING, "WARNING: func_volume with bad or missing model key, ignored\n");
 					continue;
 				}
 
+				volumeModel = &w->bmodels[modelIndex];
 				v = R_EntityValue(numKeys, keys, values, "spawnflags");
-				vo->spawnflags = v ? (unsigned)atoi(v) : 0;
+				spawnflags = v ? (unsigned)atoi(v) : 0;
+				v = R_EntityValue(numKeys, keys, values, "addIfFull");
+				addIfFull = v ? atoi(v) != 0 : false;
 
-				// группа неба (spawnflags 2) — "коробка скайбокса": запоминаем
-				// объединённые границы объёмов копии мира. По ним камера прохода 1
-				// (RE_RenderScene) распознаёт игрока, физически вошедшего в коробку
-				if(vo->spawnflags & VOLUME_SKY) {
+				// Каждый collision brush func_volume становится отдельной областью.
+				// Это не заполняет промежутки между разнесёнными brush-ами общей AABB.
+				for(brushIndex = 0; volumeModel->brushBounds && brushIndex < volumeModel->numBrushes && w->numVolumes < numVolumes; brushIndex++) {
 					int axis;
-
-					if(!w->hasSkyGroupBounds) {
-						w->hasSkyGroupBounds = true;
-						VectorCopy(vo->bounds[0], w->skyGroupBounds[0]);
-						VectorCopy(vo->bounds[1], w->skyGroupBounds[1]);
-					} else {
-						for(axis = 0; axis < 3; axis++) {
-							if(vo->bounds[0][axis] < w->skyGroupBounds[0][axis]) w->skyGroupBounds[0][axis] = vo->bounds[0][axis];
-							if(vo->bounds[1][axis] > w->skyGroupBounds[1][axis]) w->skyGroupBounds[1][axis] = vo->bounds[1][axis];
+					bool valid = true;
+					for(axis = 0; axis < 3; axis++) {
+						if(volumeModel->brushBounds[brushIndex][0][axis] > volumeModel->brushBounds[brushIndex][1][axis]) {
+							valid = false;
+							break;
 						}
+					}
+					if(!valid) continue;
+
+					{
+						volumeInfo_t* vo = &w->volumes[w->numVolumes++];
+						memset(vo, 0, sizeof(*vo));
+						VectorCopy(volumeModel->brushBounds[brushIndex][0], vo->bounds[0]);
+						VectorCopy(volumeModel->brushBounds[brushIndex][1], vo->bounds[1]);
+						vo->spawnflags = spawnflags;
+						vo->addIfFull = addIfFull;
+						addedRegions++;
 					}
 				}
 
-				w->numVolumes++;
+				// BSP без пригодных collision brush bounds остаётся совместимым
+				// со старым поведением: один объём по bounds inline-модели.
+				if(addedRegions == 0 && w->numVolumes < numVolumes) {
+					volumeInfo_t* vo = &w->volumes[w->numVolumes++];
+					memset(vo, 0, sizeof(*vo));
+					VectorCopy(volumeModel->bounds[0], vo->bounds[0]);
+					VectorCopy(volumeModel->bounds[1], vo->bounds[1]);
+					vo->spawnflags = spawnflags;
+					vo->addIfFull = addIfFull;
+				}
 			} else if(!Q_stricmp(classname, "func_display") && w->numDisplays < numDisplays) {
-				displayInfo_t* di = &w->displays[w->numDisplays];
-				int modelIndex;
-
-				memset(di, 0, sizeof(*di));
+				int modelIndex, brushIndex, addedRegions = 0;
+				unsigned spawnflags;
+				bool whitelist, hideSky;
+				bmodel_t* displayModel;
 
 				v = R_EntityValue(numKeys, keys, values, "model");
 				modelIndex = (v && v[0] == '*') ? atoi(v + 1) : 0;
-				if(modelIndex > 0 && modelIndex < w->numBModels) {
-					VectorCopy(w->bmodels[modelIndex].bounds[0], di->bounds[0]);
-					VectorCopy(w->bmodels[modelIndex].bounds[1], di->bounds[1]);
-				} else {
+				if(modelIndex <= 0 || modelIndex >= w->numBModels) {
 					ri.Printf(PRINT_WARNING, "WARNING: func_display with bad or missing model key, ignored\n");
 					continue;
 				}
 
+				displayModel = &w->bmodels[modelIndex];
 				v = R_EntityValue(numKeys, keys, values, "spawnflags");
-				di->spawnflags = v ? (unsigned)atoi(v) : 0;
+				spawnflags = v ? (unsigned)atoi(v) : 0;
 				v = R_EntityValue(numKeys, keys, values, "whitelist");
-				di->whitelist = v ? atoi(v) != 0 : false;
+				whitelist = v ? atoi(v) != 0 : false;
+				v = R_EntityValue(numKeys, keys, values, "hideSky");
+				hideSky = v ? atoi(v) != 0 : false;
 
-				w->numDisplays++;
+				// Создаём отдельную AABB-область для каждого collision brush,
+				// входящего в inline model func_display. Разрывы между brush-ами
+				// больше не заполняются общей AABB всей модели.
+				for(brushIndex = 0; displayModel->brushBounds && brushIndex < displayModel->numBrushes && w->numDisplays < numDisplays; brushIndex++) {
+					int axis;
+					bool valid = true;
+					for(axis = 0; axis < 3; axis++) {
+						if(displayModel->brushBounds[brushIndex][0][axis] > displayModel->brushBounds[brushIndex][1][axis]) {
+							valid = false;
+							break;
+						}
+					}
+					if(!valid) continue;
+
+					{
+						displayInfo_t* di = &w->displays[w->numDisplays++];
+						memset(di, 0, sizeof(*di));
+						VectorCopy(displayModel->brushBounds[brushIndex][0], di->bounds[0]);
+						VectorCopy(displayModel->brushBounds[brushIndex][1], di->bounds[1]);
+						di->spawnflags = spawnflags;
+						di->whitelist = whitelist;
+						di->hideSky = hideSky;
+						addedRegions++;
+					}
+				}
+
+				// Совместимость с BSP-моделями без brush collision data:
+				// используем прежнюю общую границу модели.
+				if(addedRegions == 0 && w->numDisplays < numDisplays) {
+					displayInfo_t* di = &w->displays[w->numDisplays++];
+					memset(di, 0, sizeof(*di));
+					VectorCopy(displayModel->bounds[0], di->bounds[0]);
+					VectorCopy(displayModel->bounds[1], di->bounds[1]);
+					di->spawnflags = spawnflags;
+					di->whitelist = whitelist;
+					di->hideSky = hideSky;
+				}
+			} else if((!Q_stricmp(classname, "func_portal_in") || !Q_stricmp(classname, "func_portal_out")) && w->numPortals < numPortals) {
+				portalInfo_t* portal = &w->portals[w->numPortals];
+				int modelIndex;
+				const char* modelValue;
+				bool isInput = !Q_stricmp(classname, "func_portal_in");
+
+				memset(portal, 0, sizeof(*portal));
+				portal->isInput = isInput;
+				portal->targetIndex = -1;
+				modelValue = R_EntityValue(numKeys, keys, values, "model");
+				modelIndex = (modelValue && modelValue[0] == '*') ? atoi(modelValue + 1) : 0;
+				portal->modelIndex = modelIndex;
+				portal->modelHandle = R_FindInlineModelHandle(modelIndex);
+				R_ParseEntityVec3(R_EntityValue(numKeys, keys, values, "origin"), portal->origin);
+				R_ParseEntityAngles(numKeys, keys, values, portal->angles);
+
+				v = R_EntityValue(numKeys, keys, values, "targetname");
+				if(v) Q_strncpyz(portal->targetName, v, sizeof(portal->targetName));
+				v = R_EntityValue(numKeys, keys, values, "target");
+				if(v) Q_strncpyz(portal->target, v, sizeof(portal->target));
+
+				if(!portal->modelHandle || !R_GetPortalFaceForModel(modelIndex, portal)) {
+					ri.Printf(PRINT_WARNING, "%s with model '%s' has no brush model or no planar 'portal' face; ignored\n", classname, modelValue ? modelValue : "(missing)");
+					continue;
+				}
+
+				w->numPortals++;
 			}
 		}
 
@@ -2213,12 +2608,209 @@ void R_LoadMapEntitySystems(void) {
 		if(pass == 0) {
 			w->numVolumes = 0;
 			w->numDisplays = 0;
+			w->numPortals = 0;
 		}
 	}
 
-	if(numVolumes || numDisplays) {
-		ri.Printf(PRINT_ALL, "...loaded %d volumes, %d displays\n", numVolumes, numDisplays);
+	// Resolve each input endpoint to the named output endpoint. The mapping is
+	// intentionally one-way: only func_portal_in is drawn as a live portal.
+	for(i = 0; i < w->numPortals; i++) {
+		portalInfo_t* in = &w->portals[i];
+		int j;
+		if(!in->isInput || !in->target[0]) continue;
+		for(j = 0; j < w->numPortals; j++) {
+			portalInfo_t* out = &w->portals[j];
+			if(!out->isInput && out->targetName[0] && !Q_stricmp(in->target, out->targetName)) {
+				in->targetIndex = j;
+				break;
+			}
+		}
+		if(in->targetIndex < 0) ri.Printf(PRINT_WARNING, "func_portal_in target '%s' has no matching func_portal_out targetname\n", in->target);
 	}
+
+	if(w->numVolumes || w->numDisplays || w->numPortals) {
+		ri.Printf(PRINT_ALL, "...loaded %d volume areas, %d display areas, %d portal endpoints\n", w->numVolumes, w->numDisplays, w->numPortals);
+	}
+}
+
+/*
+=================
+R_PointInSkyGroupVolume
+
+Test membership against the individual func_volume brush regions assigned
+VOLUME_SKY. Do not use a single union AABB: disconnected skybox brushes must
+not make the empty space between them count as being inside the miniature world.
+=================
+*/
+bool R_PointInSkyGroupVolume(const world_t* world, const vec3_t point) {
+	int i, axis;
+	if(!world || !point) return false;
+	for(i = 0; i < world->numVolumes; i++) {
+		const volumeInfo_t* volume = &world->volumes[i];
+		if(!(volume->spawnflags & VOLUME_SKY)) continue;
+		for(axis = 0; axis < 3; axis++) {
+			if(point[axis] < volume->bounds[0][axis] || point[axis] > volume->bounds[1][axis]) break;
+		}
+		if(axis == 3) return true;
+	}
+	return false;
+}
+
+/*
+=================
+R_PointInsideVolumeBounds
+=================
+*/
+static bool R_PointInsideVolumeBounds(const vec3_t point, const vec3_t bounds[2]) {
+	int axis;
+	for(axis = 0; axis < 3; axis++) {
+		if(point[axis] < bounds[0][axis] || point[axis] > bounds[1][axis]) return false;
+	}
+	return true;
+}
+
+/*
+=================
+R_TriangleBoxOverlapAxis
+
+Separating-axis test for one axis of a triangle against an AABB. The triangle
+vertices are already translated so the box center is at the origin.
+=================
+*/
+static bool R_TriangleBoxOverlapAxis(const vec3_t axis, const vec3_t v0,
+                                     const vec3_t v1, const vec3_t v2,
+                                     const vec3_t halfSize) {
+	float p0, p1, p2, minProjection, maxProjection;
+	float radius, axisLengthSquared;
+
+	axisLengthSquared = DotProduct(axis, axis);
+	if(axisLengthSquared <= 1.0e-12f) return true; // параллельные/нулевые оси не разделяют фигуры
+
+	p0 = DotProduct(v0, axis);
+	p1 = DotProduct(v1, axis);
+	p2 = DotProduct(v2, axis);
+	minProjection = MIN(p0, MIN(p1, p2));
+	maxProjection = MAX(p0, MAX(p1, p2));
+
+	radius = halfSize[0] * (float)fabs(axis[0]) +
+	         halfSize[1] * (float)fabs(axis[1]) +
+	         halfSize[2] * (float)fabs(axis[2]);
+	// Маленький допуск сохраняет касающиеся границы поверхности и объёма.
+	radius += 0.01f * (float)sqrt(axisLengthSquared);
+
+	return !(minProjection > radius || maxProjection < -radius);
+}
+
+/*
+=================
+R_TriangleIntersectsVolumeBounds
+
+Exact triangle-vs-AABB overlap using the 13 separating axes: 3 box axes,
+triangle normal, and 9 edge/box-axis cross products.
+=================
+*/
+static bool R_TriangleIntersectsVolumeBounds(const vec3_t a, const vec3_t b,
+                                             const vec3_t c, const vec3_t bounds[2]) {
+	vec3_t center, halfSize, v0, v1, v2;
+	vec3_t edges[3], axis, boxAxis;
+	int i, j;
+
+	for(i = 0; i < 3; i++) {
+		center[i] = (bounds[0][i] + bounds[1][i]) * 0.5f;
+		halfSize[i] = (bounds[1][i] - bounds[0][i]) * 0.5f;
+		v0[i] = a[i] - center[i];
+		v1[i] = b[i] - center[i];
+		v2[i] = c[i] - center[i];
+	}
+
+	// 3 координатные оси AABB.
+	for(i = 0; i < 3; i++) {
+		float minValue = MIN(v0[i], MIN(v1[i], v2[i]));
+		float maxValue = MAX(v0[i], MAX(v1[i], v2[i]));
+		if(minValue > halfSize[i] + 0.01f || maxValue < -halfSize[i] - 0.01f) return false;
+	}
+
+	VectorSubtract(v1, v0, edges[0]);
+	VectorSubtract(v2, v1, edges[1]);
+	VectorSubtract(v0, v2, edges[2]);
+
+	// 9 осей: каждое ребро треугольника x каждая ось AABB.
+	for(i = 0; i < 3; i++) {
+		for(j = 0; j < 3; j++) {
+			VectorClear(boxAxis);
+			boxAxis[j] = 1.0f;
+			CrossProduct(edges[i], boxAxis, axis);
+			if(!R_TriangleBoxOverlapAxis(axis, v0, v1, v2, halfSize)) return false;
+		}
+	}
+
+	// Нормаль плоскости треугольника.
+	CrossProduct(edges[0], edges[1], axis);
+	if(!R_TriangleBoxOverlapAxis(axis, v0, v1, v2, halfSize)) return false;
+
+	return true;
+}
+
+/*
+=================
+R_SurfaceIntersectsVolumeBounds
+
+Returns true when any actual triangle of the BSP surface intersects the
+volume. It deliberately does not rely only on surface AABB overlap, which
+would incorrectly include diagonal surfaces whose bounds overlap the volume
+while the surface itself misses it.
+=================
+*/
+static bool R_SurfaceIntersectsVolumeBounds(const srfBspSurface_t* bsp,
+                                            const vec3_t surfaceBounds[2],
+                                            const vec3_t volumeBounds[2]) {
+	int i;
+	bool testedTriangle = false;
+
+	if(bsp && bsp->verts && bsp->indexes && bsp->numIndexes >= 3) {
+		for(i = 0; i + 2 < bsp->numIndexes; i += 3) {
+			int i0 = bsp->indexes[i + 0];
+			int i1 = bsp->indexes[i + 1];
+			int i2 = bsp->indexes[i + 2];
+
+			if(i0 < 0 || i1 < 0 || i2 < 0 ||
+			   i0 >= bsp->numVerts || i1 >= bsp->numVerts || i2 >= bsp->numVerts) continue;
+
+			testedTriangle = true;
+			if(R_TriangleIntersectsVolumeBounds(bsp->verts[i0].xyz,
+			                                   bsp->verts[i1].xyz,
+			                                   bsp->verts[i2].xyz,
+			                                   volumeBounds)) return true;
+		}
+	}
+
+	if(testedTriangle) return false;
+
+	// Редкий fallback для поверхностей без пригодных треугольных индексов:
+	// используем пересечение их bounds, а не требуем попадания всех вершин.
+	for(i = 0; i < 3; i++) {
+		if(surfaceBounds[1][i] < volumeBounds[0][i] ||
+		   surfaceBounds[0][i] > volumeBounds[1][i]) return false;
+	}
+	return true;
+}
+
+/*
+=================
+R_SurfaceFullyInsideVolumeBounds
+
+Legacy func_volume behavior: every surface vertex must be contained by the
+volume. Used only when the entity has "addIfFull" "1".
+=================
+*/
+static bool R_SurfaceFullyInsideVolumeBounds(const srfBspSurface_t* bsp,
+                                             const vec3_t volumeBounds[2]) {
+	int i;
+	if(!bsp || !bsp->verts || bsp->numVerts <= 0) return false;
+	for(i = 0; i < bsp->numVerts; i++) {
+		if(!R_PointInsideVolumeBounds(bsp->verts[i].xyz, volumeBounds)) return false;
+	}
+	return true;
 }
 
 /*
@@ -2227,78 +2819,57 @@ R_AssignVolumeFlagsToWorldSurfaces
 
 Разметка поверхностей группами объёмов. Базовые группы для ВСЕХ поверхностей
 карты (мир и brush-энтити):
-  - небо (isSky)          -> VOLUME_SKY  (чёткое правило: небо и 3D-скайбокс
-                             всегда принадлежат группе VOLUME_SKY)
+  - небо (isSky)          -> VOLUME_SKY
   - остальная геометрия   -> VOLUME_WORLD
-Дополнительно каждой world-поверхности, ВСЕ вершины которой целиком лежат
-внутри func_volume, назначаются spawnflags этого объёма:
-  - бит 2 (VOLUME_SKY) — КОПИЯ неба (мини-мир 3D-скайбокса): поверхность
-    получает РОВНО VOLUME_SKY, без VOLUME_WORLD и кастомных битов. Иначе
-    проход 3D-скайбокса (маска ~VOLUME_SKY = 0xFFFFFFFD) отсеет её как
-    "чужую" геометрию, и мини-мир не нарисуется никогда.
-  - биты 4, 8, 16, ... — кастомные группы картостроителя поверх базовой
-    группы (с поверхностями группы неба не смешиваются).
-Вызывается один раз при загрузке карты после загрузки поверхностей.
+По умолчанию func_volume назначает spawnflags поверхности при любом реальном
+пересечении её треугольников с brush-областью. Это позволяет включать большие
+поверхности, лишь частично заходящие в volume. Ключ "addIfFull" "1" включает
+прежнее поведение: ВСЕ вершины поверхности должны целиком находиться внутри
+области. Каждый collision brush остаётся самостоятельной областью.
+
+Для VOLUME_SKY поверхность получает РОВНО VOLUME_SKY, без VOLUME_WORLD и
+кастомных битов. Для остальных групп spawnflags добавляются поверх базовой
+группы мира; с группой неба они не смешиваются.
 =================
 */
 void R_AssignVolumeFlagsToWorldSurfaces(void) {
 	world_t* w;
-	int i, j, k, v;
+	int i, v;
 	msurface_t* surf;
 	srfBspSurface_t* bspSurf;
-	srfVert_t* verts;
-	int numVerts;
 	volumeInfo_t* vol;
-	bool allInside;
+	bool matchesVolume;
 
 	w = &s_worldData;
 
-	// базовые группы для всех поверхностей, включая brush-энтити (двери,
-	// func_static и т.д. — иначе whitelist display скрывал бы их всегда)
+	// Базовые группы для всех поверхностей, включая brush-энтити.
 	for(i = 0; i < w->numsurfaces; i++) {
 		surf = &w->surfaces[i];
 		surf->volumeFlags = (surf->shader && surf->shader->isSky) ? VOLUME_SKY : VOLUME_WORLD;
 	}
 
 	for(i = 0; i < w->numWorldSurfaces; i++) {
+		surfaceType_t surfaceType;
 		surf = &w->surfaces[i];
+		surfaceType = *surf->data;
+		if(surfaceType != SF_FACE && surfaceType != SF_GRID && surfaceType != SF_TRIANGLES) continue;
 
-		switch(*(surf->data)) {
-			case SF_FACE:
-			case SF_GRID:
-			case SF_TRIANGLES:
-				bspSurf = (srfBspSurface_t*)surf->data;
-				numVerts = bspSurf->numVerts;
-				verts = bspSurf->verts;
-				break;
-
-			default: continue;
-		}
-
-		if(!verts || numVerts <= 0) continue;
+		bspSurf = (srfBspSurface_t*)surf->data;
+		if(!bspSurf->verts || bspSurf->numVerts <= 0) continue;
 
 		for(v = 0; v < w->numVolumes; v++) {
 			vol = &w->volumes[v];
-
-			allInside = true;
-			for(j = 0; j < numVerts && allInside; j++) {
-				for(k = 0; k < 3; k++) {
-					if(verts[j].xyz[k] < vol->bounds[0][k] || verts[j].xyz[k] > vol->bounds[1][k]) {
-						allInside = false;
-						break;
-					}
-				}
+			if(vol->addIfFull) {
+				matchesVolume = R_SurfaceFullyInsideVolumeBounds(bspSurf, vol->bounds);
+			} else {
+				matchesVolume = R_SurfaceIntersectsVolumeBounds(bspSurf, surf->cullinfo.bounds, vol->bounds);
 			}
 
-			if(allInside) {
+			if(matchesVolume) {
 				if(vol->spawnflags & VOLUME_SKY) {
-					// группа неба (копия мира для 3D-скайбокса): ТОЛЬКО VOLUME_SKY,
-					// без VOLUME_WORLD и кастомных битов — иначе проход 3D-скайбокса
-					// с маской ~VOLUME_SKY (0xFFFFFFFD) её не нарисует
+					// Копия мира для 3D skybox принадлежит только VOLUME_SKY.
 					surf->volumeFlags = VOLUME_SKY;
 				} else if(surf->volumeFlags != VOLUME_SKY) {
-					// кастомные группы картостроителя поверх базовой группы мира;
-					// с группой неба (уже назначенной выше) не смешиваются
 					surf->volumeFlags |= vol->spawnflags;
 				}
 			}
@@ -2326,7 +2897,7 @@ void R_AssignCubemapsToWorldSurfaces(void) {
 		surf->useCubemap = false;
 		surf->cubemapBound = 0.0f;
 
-		if(!R_ShaderRequiresCubemap(surf->shader)) continue;
+		if(!R_ShaderRequiresCubemap(surf->shader) && !surf->shader->isWater) continue;
 
 		bool cubemapCorrection = surf->shader->surfaceFlags & SURF_CUBEMAP_WATER;
 
@@ -2355,8 +2926,9 @@ void R_AssignCubemapsToWorldSurfaces(void) {
 =================
 R_AssignWaterPlanesToWorldSurfaces
 
-Finds the SURF_CUBEMAP_WATER surfaces that can use a planar reflection (r_planarReflections):
-flat, horizontal and facing up. Everything else keeps using the cubemap.
+Find flat surfaces marked with the `water` shader keyword. Their plane can be
+oriented arbitrarily; the reflection pass transforms it through the current
+brush-entity matrix at draw time. Curved water keeps the cubemap fallback.
 =================
 */
 static void R_AssignWaterPlanesToWorldSurfaces(void) {
@@ -2366,33 +2938,53 @@ static void R_AssignWaterPlanesToWorldSurfaces(void) {
 	for(i = 0; i < w->numsurfaces; i++) {
 		msurface_t* surf = &w->surfaces[i];
 		const cullinfo_t* ci = &surf->cullinfo;
+		cplane_t plane;
 		vec3_t center;
-		float height;
+		float normalLength;
+		bool planar = false;
 
 		surf->isWaterPlane = false;
-		surf->waterHeight = 0.0f;
+		Com_Memset(&surf->waterPlane, 0, sizeof(surf->waterPlane));
 		VectorClear(surf->waterCenter);
 
-		if(!surf->shader || !(surf->shader->surfaceFlags & SURF_CUBEMAP_WATER)) continue;
+		if(!surf->shader || !surf->shader->isWater) continue;
 		if(!(ci->type & CULLINFO_BOX)) continue;
+
+		if(ci->type & CULLINFO_PLANE) {
+			plane = ci->plane;
+			planar = true;
+		} else if(surf->data && (*(surf->data) == SF_TRIANGLES || *(surf->data) == SF_GRID)) {
+			srfBspSurface_t* bsp = (srfBspSurface_t*)surf->data;
+			vec4_t p;
+			int v;
+
+			if(bsp->numVerts < 3) continue;
+			PlaneFromPoints(p, bsp->verts[0].xyz, bsp->verts[1].xyz, bsp->verts[2].xyz);
+			VectorCopy(p, plane.normal);
+			plane.dist = p[3];
+			planar = true;
+			for(v = 3; v < bsp->numVerts; v++) {
+				if(fabs(DotProduct(bsp->verts[v].xyz, plane.normal) - plane.dist) > 1.0f) {
+					planar = false;
+					break;
+				}
+			}
+		}
+
+		if(!planar) continue;
+		normalLength = VectorNormalize(plane.normal);
+		if(normalLength <= 0.0001f) continue;
+		plane.dist /= normalLength;
+		SetPlaneSignbits(&plane);
+		plane.type = PlaneTypeForNormal(plane.normal);
 
 		center[0] = (ci->bounds[0][0] + ci->bounds[1][0]) * 0.5f;
 		center[1] = (ci->bounds[0][1] + ci->bounds[1][1]) * 0.5f;
 		center[2] = (ci->bounds[0][2] + ci->bounds[1][2]) * 0.5f;
+		VectorMA(center, plane.dist - DotProduct(center, plane.normal), plane.normal, surf->waterCenter);
 
-		if(ci->type & CULLINFO_PLANE) {
-			// flat face: has to face up (the bottom and the sides of a water brush are not a reflecting plane)
-			if(ci->plane.normal[2] < 0.95f) continue;
-			height = (ci->plane.dist - ci->plane.normal[0] * center[0] - ci->plane.normal[1] * center[1]) / ci->plane.normal[2];
-		} else {
-			// patches / triangle soups: only accept practically flat geometry
-			if(ci->bounds[1][2] - ci->bounds[0][2] > 2.0f) continue;
-			height = center[2];
-		}
-
+		surf->waterPlane = plane;
 		surf->isWaterPlane = true;
-		surf->waterHeight = height;
-		VectorCopy(center, surf->waterCenter);
 		numWater++;
 	}
 
@@ -2522,7 +3114,7 @@ void RE_LoadWorldMap(const char* name) {
 	R_LoadSurfaces(&header->lumps[LUMP_SURFACES], &header->lumps[LUMP_DRAWVERTS], &header->lumps[LUMP_DRAWINDEXES]);
 	R_LoadMarksurfaces(&header->lumps[LUMP_LEAFSURFACES]);
 	R_LoadNodesAndLeafs(&header->lumps[LUMP_NODES], &header->lumps[LUMP_LEAFS]);
-	R_LoadSubmodels(&header->lumps[LUMP_MODELS]);
+	R_LoadSubmodels(&header->lumps[LUMP_MODELS], &header->lumps[LUMP_BRUSHES], &header->lumps[LUMP_BRUSHSIDES]);
 	R_LoadVisibility(&header->lumps[LUMP_VISIBILITY]);
 	R_LoadLightGrid(&header->lumps[LUMP_LIGHTGRID]);
 
@@ -2704,7 +3296,7 @@ void RE_LoadWorldMap(const char* name) {
 	}
 
 	// planar water reflections (independent of the cubemaps)
-	if(r_planarReflections->integer) R_AssignWaterPlanesToWorldSurfaces();
+	R_AssignWaterPlanesToWorldSurfaces();
 
 	s_worldData.dataSize = (byte*)ri.Hunk_Alloc(0, h_low) - startMarker;
 

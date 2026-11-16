@@ -1544,10 +1544,24 @@ static bool ParseShader(char** text) {
 			SkipRestOfLine(text);
 			continue;
 		}
-		// portal
+		// Portal surface. The matching func_portal_in / func_portal_out
+		// endpoints are loaded from the BSP entity lump by the renderer.
 		else if(!Q_stricmp(token, "portal")) {
 			shader.sort = SS_PORTAL;
 			shader.isPortal = true;
+			if(shader.portalRange <= 0.0f) shader.portalRange = 8192.0f;
+			continue;
+		}
+		// A mirror uses the current surface plane and does not need a portal entity.
+		else if(!Q_stricmp(token, "mirror")) {
+			shader.sort = SS_PORTAL;
+			shader.isMirror = true;
+			continue;
+		}
+		// Planar water reflection. Flat faces are reflected in their own plane;
+		// curved or non-planar geometry is not selected for the planar pass.
+		else if(!Q_stricmp(token, "water")) {
+			shader.isWater = true;
 			continue;
 		}
 		// Legacy skyparms are deliberately ignored. Procedural sky is driven
@@ -1647,7 +1661,7 @@ static void ComputeVertexAttribs(void) {
 	shader.vertexAttribs = ATTR_POSITION | ATTR_NORMAL;
 
 	// portals always need normals, for SurfIsOffscreen()
-	if(shader.isPortal) {
+	if(shader.isPortal || shader.isMirror) {
 		shader.vertexAttribs |= ATTR_NORMAL;
 	}
 

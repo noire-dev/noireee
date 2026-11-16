@@ -162,6 +162,7 @@ static uniformInfo_t uniformsInfo[] = {
     {"u_CubeMapParallaxInfo", GLSL_VEC3},
     {"u_WaterReflectMatrix", GLSL_MAT16},
     {"u_WaterReflectInfo", GLSL_VEC4},
+    {"u_WaterReflectPlane", GLSL_VEC4},
 
     {"u_AlphaTest", GLSL_INT},
 

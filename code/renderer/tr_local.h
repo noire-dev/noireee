@@ -485,6 +485,8 @@ typedef struct shader_s {
 
 	float portalRange;  // distance to fog out at
 	bool isPortal;
+	bool isMirror;  // planar mirror view, no paired map entity required
+	bool isWater;   // planar reflection material
 
 	cullType_t cullType;  // CT_FRONT_SIDED, CT_BACK_SIDED, or CT_TWO_SIDED
 	bool polygonOffset;   // set for decals and other items that must be offset
@@ -682,6 +684,7 @@ typedef enum {
 	UNIFORM_CUBEMAPARALLAXINFO,
 	UNIFORM_WATERREFLECTMATRIX,
 	UNIFORM_WATERREFLECTINFO,
+	UNIFORM_WATERREFLECTPLANE,
 
 	UNIFORM_ALPHATEST,
 
@@ -906,8 +909,9 @@ typedef struct {
 	orientationr_t or ;
 	orientationr_t world;
 	vec3_t pvsOrigin;  // may be different than or.origin for portals
-	bool isPortal;     // true if this view is through a portal
+	bool isPortal;     // true if this view is through a portal or mirror
 	bool isMirror;     // the portal is a mirror, invert the face culling
+	int portalRecursion; // number of portal/mirror transitions from the primary view
 	viewParmFlags_t flags;
 
 	unsigned volumeFlags;
@@ -917,9 +921,12 @@ typedef struct {
 	int frameCount;                // copied from tr.frameCount
 	cplane_t portalPlane;          // clip anything behind this if mirroring
 	bool hasWaterReflection;       // planar water reflection (r_planarReflections) was rendered for this view
-	float waterReflectHeight;      // world Z of the reflected water plane
+	cplane_t waterReflectPlane;    // arbitrary world-space plane used by the planar reflection
 	float waterReflectMatrix[16];  // viewProjection of the mirrored camera (world -> clip)
 	int viewportX, viewportY, viewportWidth, viewportHeight;
+	// Optional scissor rectangle. A zero width/height uses the full viewport.
+	// Portal child views intersect this with the visible portal aperture bounds.
+	int scissorX, scissorY, scissorWidth, scissorHeight;
 	FBO_t* targetFbo;
 	int targetFboLayer;
 	int targetFboCubemapIndex;
@@ -1216,9 +1223,9 @@ typedef struct msurface_s {
 	bool useCubemap;
 	vec3_t cubemapOrigin;
 	float cubemapBound;
-	bool isWaterPlane;   // SURF_CUBEMAP_WATER surface that lies on a horizontal plane (r_planarReflections)
-	float waterHeight;   // world Z of that plane
-	vec3_t waterCenter;  // center of the surface bounds
+	bool isWaterPlane;   // flat surface marked with the shader keyword `water`
+	cplane_t waterPlane; // local plane; transformed by the current brush-entity orientation
+	vec3_t waterCenter; // center of the surface bounds, projected onto waterPlane
 	cullinfo_t cullinfo;
 
 	surfaceType_t* data;  // any of srf*_t
@@ -1250,18 +1257,41 @@ typedef struct {
 	vec3_t bounds[2];  // for culling
 	int firstSurface;
 	int numSurfaces;
+	int firstBrush;
+	int numBrushes;
+	vec3_t (*brushBounds)[2]; // bounds for each collision brush in this inline model
 } bmodel_t;
 
 typedef struct volumeInfo_s {
 	vec3_t bounds[2];
-	unsigned spawnflags;  // ключ "spawnflags" — маска видимости
+	unsigned spawnflags;  // ключ "spawnflags" — маска видимости; отдельная область одного collision brush
+	bool addIfFull;       // ключ "addIfFull" "1" — старая логика: вся поверхность должна целиком находиться внутри объёма
 } volumeInfo_t;
 
 typedef struct displayInfo_s {
 	vec3_t bounds[2];
-	unsigned spawnflags;  // ключ "spawnflags" — маска видимости
+	unsigned spawnflags;  // ключ "spawnflags" — маска видимости; отдельная область одного collision brush
 	bool whitelist;       // ключ "whitelist" "0/1" — 1: скрывать всё, кроме перечисленного
+	bool hideSky;         // ключ "hideSky" "0/1" — отключить sky shader и 3D skybox внутри объёма
 } displayInfo_t;
+
+/*
+ * Renderer-owned portal endpoints read from the BSP entity lump. `func_portal_in`
+ * brush models are inserted into the scene automatically; their `target` key
+ * names the `targetname` of a `func_portal_out` endpoint.
+ */
+typedef struct portalInfo_s {
+	bool isInput;
+	int modelIndex;       // BSP submodel index (*N)
+	int modelHandle;      // renderer model handle for the inline brush model
+	int targetIndex;      // paired func_portal_out index, or -1 when invalid
+	vec3_t origin;
+	vec3_t angles;        // brush-model orientation
+	vec3_t localOrigin;   // exact center of the portal shader face in brush-local coordinates
+	vec3_t localNormal;   // inward normal: from portal face toward the brush center
+	char targetName[64];
+	char target[64];
+} portalInfo_t;
 
 typedef struct {
 	char name[MAX_QEXTENDEDPATH];      // ie: maps/tim_dm2.bsp
@@ -1305,15 +1335,8 @@ typedef struct {
 	volumeInfo_t* volumes;
 	int numDisplays;
 	displayInfo_t* displays;
-
-	// границы группы неба: объединение func_volume со spawnflags 2 — "коробка
-	// скайбокса", объём вокруг копии мира. Камера прохода 1 (RE_RenderScene)
-	// считает игрока, находящегося внутри этих границ, вошедшим в коробку, и
-	// ставит камеру прямо в его точку (1:1) — иначе смещение vieworg/scale,
-	// раздутый координатами коробки (~skyboxOrigin), уводил камеру из мини-мира
-	// и проход 1 рисовался пустым. Нет объёмов со spawnflags 2 — нет коррекции.
-	bool hasSkyGroupBounds;
-	vec3_t skyGroupBounds[2];
+	int numPortals;
+	portalInfo_t* portals;
 
 	// базовая маска объёмов из worldspawn ("volumeflags"), активна, когда игрок
 	// не находится ни в одном display-объёме; по умолчанию VOLUME_SKY
@@ -1685,7 +1708,7 @@ typedef struct {
 
 	// planar water reflection: nearest visible water plane found while building the main view
 	bool waterFound;
-	float waterFoundHeight;
+	cplane_t waterFoundPlane;
 	float waterFoundDistSq;
 	vec3_t waterFoundCenter;
 
@@ -1696,6 +1719,7 @@ typedef struct {
 	// "volumeflags" (по умолчанию VOLUME_SKY — вне display скрыта КОПИЯ неба,
 	// см. VOLUME_SKY); внутри func_display — его spawnflags.
 	unsigned volumeFlags;
+	bool hideSky;          // active func_display can suppress sky surfaces and the 3D skybox
 
 	// func_display whitelist: РИСУЙ ТОЛЬКО поверхности, чьи volumeFlags
 	// пересекаются с volumeShowFlags; всё остальное скрывается.
@@ -1894,8 +1918,10 @@ extern cvar_t* r_fogStart;
 extern cvar_t* r_fogEnd;
 
 extern cvar_t* r_3dsky;
+extern cvar_t* r_portalRedrawSkybox;           // 1 = render destination 3D skybox for first-level portal views
 
-extern cvar_t* r_planarReflections;            // 1 = SURF_CUBEMAP_WATER surfaces use planar reflections instead of cubemaps
+extern cvar_t* r_recursionCount;               // maximum nested portal/mirror views (0 disables them)
+extern cvar_t* r_planarReflections;            // 1 = planar reflections for flat shader surfaces marked `water`
 extern cvar_t* r_planarReflectionsScale;       // size of the reflection texture relative to the screen
 extern cvar_t* r_planarReflectionsDistortion;  // how strongly the normalmap distorts the reflection (world units)
 extern cvar_t* r_planarReflectionsSkybox;      // 3D skybox (мини-мир) в планарных отражениях воды (r_planarReflections)
@@ -1982,6 +2008,7 @@ static ID_INLINE float R_ViewFogScale(const viewParms_t* vp) {
 //====================================================================
 
 void R_RenderView(viewParms_t* parms);
+void R_AddMapPortalEntities(void);
 void R_RenderWaterReflection(void);
 void R_NoteWaterSurface(const msurface_t* surf);
 void R_RenderDlightCubemaps(const refdef_t* fd);
@@ -1999,7 +2026,9 @@ void R_AddFlareSurfaces(void);
 
 // загрузка worldspawn ("volumeflags"), misc_skybox / func_volume / func_display из энтити-лампы карты
 void R_LoadMapEntitySystems(void);
-// назначение volumeFlags поверхностям мира по объёмам func_volume
+// true, если точка попадает в одну из отдельных brush-областей func_volume с VOLUME_SKY
+bool R_PointInSkyGroupVolume(const world_t* world, const vec3_t point);
+// назначение volumeFlags поверхностям мира по отдельным brush-областям func_volume
 void R_AssignVolumeFlagsToWorldSurfaces(void);
 
 void R_DecomposeSort(uint64_t sort, int* entityNum, shader_t** shader, int* fogNum, int* dlightMap);

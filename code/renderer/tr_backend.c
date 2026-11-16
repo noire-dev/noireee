@@ -233,9 +233,16 @@ static void RB_Hyperspace(void) {
 static void SetViewportAndScissor(void) {
 	GL_SetProjectionMatrix(backEnd.viewParms.projectionMatrix);
 
-	// set the window clipping
+	// Keep the projection viewport unchanged, but allow portal child views to
+	// draw only inside the screen-space rectangle of their source aperture.
 	qglViewport(backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight);
-	qglScissor(backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight);
+	if(backEnd.viewParms.scissorWidth > 0 && backEnd.viewParms.scissorHeight > 0) {
+		qglScissor(backEnd.viewParms.scissorX, backEnd.viewParms.scissorY,
+		          backEnd.viewParms.scissorWidth, backEnd.viewParms.scissorHeight);
+	} else {
+		qglScissor(backEnd.viewParms.viewportX, backEnd.viewParms.viewportY,
+		          backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight);
+	}
 }
 
 /*
@@ -906,7 +913,7 @@ const void* RB_DrawSurfs(const void* data) {
 	}
 
 	{
-		bool skyboxActive = tr.world && tr.world->hasSkybox && r_3dsky->integer && !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL);
+		bool skyboxActive = tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL);
 		bool occlusionPass = skyboxActive ? (backEnd.viewParms.flags & VPF_SKYDRAWN) != 0 : !(backEnd.viewParms.flags & VPF_SKYBOX3D);
 
 		if(glRefConfig.framebufferObject && r_sunRays->integer && occlusionPass) {

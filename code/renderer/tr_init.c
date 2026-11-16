@@ -107,7 +107,9 @@ cvar_t* r_fogStart;
 cvar_t* r_fogEnd;
 
 cvar_t* r_3dsky;
+cvar_t* r_portalRedrawSkybox;
 
+cvar_t* r_recursionCount;
 cvar_t* r_planarReflections;
 cvar_t* r_planarReflectionsScale;
 cvar_t* r_planarReflectionsDistortion;
@@ -923,7 +925,9 @@ void R_Register(void) {
 	r_fogEnd = ri.Cvar_Get("r_fogEnd", "500000", CVAR_ARCHIVE);
 
 	r_3dsky = ri.Cvar_Get("r_3dsky", "1", CVAR_ARCHIVE);
+	r_portalRedrawSkybox = ri.Cvar_Get("r_portalRedrawSkybox", "1", CVAR_ARCHIVE);
 
+	r_recursionCount = ri.Cvar_Get("r_recursionCount", "2", CVAR_ARCHIVE);
 	r_planarReflections = ri.Cvar_Get("r_planarReflections", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_planarReflectionsScale = ri.Cvar_Get("r_planarReflectionsScale", "1.00", CVAR_ARCHIVE | CVAR_LATCH);
 	r_planarReflectionsDistortion = ri.Cvar_Get("r_planarReflectionsDistortion", "1024", CVAR_ARCHIVE);

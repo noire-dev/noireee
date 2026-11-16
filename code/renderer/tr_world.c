@@ -212,6 +212,11 @@ static void R_AddWorldSurface(msurface_t* surf, const dlightMask_t* sourceDlight
 	dlightMask_t dlightBits;
 	int fogIndex;
 
+	// func_display hideSky suppresses both the 2D sky dome and the VOLUME_SKY
+	// geometry used by the 3D skybox. Keep this check centralized so it applies
+	// equally to the main view, portal views, reflections, and auxiliary passes.
+	if(tr.hideSky && (surf->shader->isSky || (surf->volumeFlags & VOLUME_SKY))) return;
+
 	/*
 	 * Правила видимости объёмов ЭТОЙ камеры (маску ставит R_SetupVolumeRules).
 	 * Небесный купол (isSky, "портальное небо") объёмами не скрывается никогда —
@@ -600,7 +605,15 @@ static bool R_LeafVisible(const mnode_t* leaf, const byte* vis) {
 
 	if(vis && !(vis[cluster >> 3] & (1 << (cluster & 7)))) return false;
 
-	if(!(tr.viewParms.flags & VPF_SKYBOX3D)) {
+	/*
+	 * The refdef areamask belongs to the player's original camera. A portal
+	 * (or mirror / planar-reflection) view can be looking into a different
+	 * area, so applying that mask here incorrectly cuts the remote scene at
+	 * closed areaportals from the player's location. The portal view already
+	 * has its own PVS origin above; keep that PVS test, but do not reuse the
+	 * primary camera's area mask for a virtual camera.
+	 */
+	if(!tr.viewParms.isPortal && !(tr.viewParms.flags & VPF_SKYBOX3D)) {
 		if(tr.refdef.areamask[leaf->area >> 3] & (1 << (leaf->area & 7))) return false;
 	}
 

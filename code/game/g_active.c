@@ -134,6 +134,7 @@ void ClientImpacts(gentity_t* ent, pmove_t* pm) {
 G_TouchTriggers
 ============
 */
+#define PORTAL_TOUCH_SCALE 2.00f
 void G_TouchTriggers(gentity_t* ent) {
 	int i, num;
 	int touch[MAX_GENTITIES];
@@ -174,6 +175,17 @@ void G_TouchTriggers(gentity_t* ent) {
 		// so you don't have to actually contact its bounding box
 		if(BG_IsItemEntity(&hit->s) || hit->s.eType == ET_ITEM) {
 			if(!BG_PlayerTouchesItem(&ent->client->ps, &hit->s, level.time)) {
+				continue;
+			}
+		} else if(hit->s.eType == ET_PORTAL) {
+			vec3_t pmins, pmaxs;
+			int k;
+
+			for(k = 0; k < 3; k++) {
+				pmins[k] = ent->client->ps.origin[k] + ent->r.mins[k] * PORTAL_TOUCH_SCALE;
+				pmaxs[k] = ent->client->ps.origin[k] + ent->r.maxs[k] * PORTAL_TOUCH_SCALE;
+			}
+			if(!trap_EntityContact(pmins, pmaxs, hit)) {
 				continue;
 			}
 		} else {

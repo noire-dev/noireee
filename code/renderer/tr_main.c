@@ -520,9 +520,43 @@ static void R_SetFarClip(void) {
 		return;
 	}
 
-	//
-	// set far clipping planes dynamically
-	//
+	/*
+	 * Portal/mirror views use one fixed far clip distance derived only from
+	 * the size of the whole map. Do not measure from the virtual camera: its
+	 * position changes at every portal transition, which made the visible
+	 * depth shrink/grow as the player moved or looked through another portal.
+	 *
+	 * The diagonal of the world-model AABB is the maximum distance between
+	 * any two points inside the map bounds. Add a small fixed safety margin
+	 * for brush/entity geometry just outside those bounds. This value is
+	 * identical for every portal and every recursion level.
+	 */
+	if(tr.viewParms.isPortal) {
+		if(tr.world && tr.world->numBModels > 0) {
+			const bmodel_t* worldModel = &tr.world->bmodels[0];
+			vec3_t mapSize;
+			float mapDiagonal;
+
+			for(i = 0; i < 3; i++) {
+				mapSize[i] = fabs(worldModel->bounds[1][i] - worldModel->bounds[0][i]);
+			}
+
+			mapDiagonal = VectorLength(mapSize);
+			if(mapDiagonal > 1.0f) {
+				tr.viewParms.zFar = MAX(mapDiagonal + 1024.0f, 4096.0f);
+			} else {
+				// Defensive fallback for a malformed/empty world-model bounds.
+				tr.viewParms.zFar = 65536.0f;
+			}
+		} else {
+			// Portal views without a loaded world model should still have a
+			// generous, deterministic depth range.
+			tr.viewParms.zFar = 65536.0f;
+		}
+		return;
+	}
+
+	// Set far clipping planes dynamically for the primary view.
 	farthestCornerDistance = 0;
 	for(i = 0; i < 8; i++) {
 		vec3_t v;
@@ -662,6 +696,13 @@ R_SetupProjectionZ
 Sets the z-component transformation part in the projection matrix
 ===============
 */
+static float R_PortalSignNotZero(float value) {
+	// Lengyel's oblique near-plane projection needs an actual far-frustum
+	// corner. Returning zero for a zero plane component selects the centre ray
+	// instead and can make the resulting far plane collapse toward the centre.
+	return value >= 0.0f ? 1.0f : -1.0f;
+}
+
 void R_SetupProjectionZ(viewParms_t* dest) {
 	float zNear, zFar, depth;
 
@@ -693,18 +734,106 @@ void R_SetupProjectionZ(viewParms_t* dest) {
 
 		// Lengyel, Eric. "Modifying the Projection Matrix to Perform Oblique Near-plane Clipping".
 		// Terathon Software 3D Graphics Library, 2004. http://www.terathon.com/code/oblique.html
-		q[0] = (SGN(plane2[0]) + dest->projectionMatrix[8]) / dest->projectionMatrix[0];
-		q[1] = (SGN(plane2[1]) + dest->projectionMatrix[9]) / dest->projectionMatrix[5];
+		q[0] = (R_PortalSignNotZero(plane2[0]) + dest->projectionMatrix[8]) / dest->projectionMatrix[0];
+		q[1] = (R_PortalSignNotZero(plane2[1]) + dest->projectionMatrix[9]) / dest->projectionMatrix[5];
 		q[2] = -1.0f;
 		q[3] = (1.0f + dest->projectionMatrix[10]) / dest->projectionMatrix[14];
 
-		VectorScale4(plane2, 2.0f / DotProduct4(plane2, q), c);
+		{
+			float clipDot = DotProduct4(plane2, q);
 
-		dest->projectionMatrix[2] = c[0];
-		dest->projectionMatrix[6] = c[1];
-		dest->projectionMatrix[10] = c[2] + 1.0f;
-		dest->projectionMatrix[14] = c[3];
+			/*
+			 * With the portal plane oriented into the visible destination
+			 * half-space and q chosen as the far corner, clipDot must be positive.
+			 * A negative value indicates an invalid/back-facing clip plane; using
+			 * fabs() here used to accept it and could turn the far plane into a
+			 * narrow wedge whenever the view moved off the portal centreline.
+			 */
+			if(clipDot > 0.000001f) {
+				VectorScale4(plane2, 2.0f / clipDot, c);
+
+				dest->projectionMatrix[2] = c[0];
+				dest->projectionMatrix[6] = c[1];
+				dest->projectionMatrix[10] = c[2] + 1.0f;
+				dest->projectionMatrix[14] = c[3];
+			}
+		}
 	}
+}
+
+/*
+=================
+R_SetupFrustumFromProjection
+
+Extract the culling planes from the final projection matrix. Oblique portal
+near-plane clipping changes the projection's far plane at oblique angles.
+Using the old symmetric frustum here culls valid BSP surfaces into a wedge,
+which was the apparent zFar problem. The extracted planes use the same clip
+inequalities as OpenGL, so CPU BSP culling and GPU clipping agree.
+=================
+*/
+static void R_SetupFrustumFromProjection(viewParms_t* dest) {
+	float row[4][4];
+	float clipPlanes[5][4];
+	int i, j;
+
+	// projectionMatrix is column-major; form its four mathematical rows.
+	row[0][0] = dest->projectionMatrix[0];
+	row[0][1] = dest->projectionMatrix[4];
+	row[0][2] = dest->projectionMatrix[8];
+	row[0][3] = dest->projectionMatrix[12];
+	row[1][0] = dest->projectionMatrix[1];
+	row[1][1] = dest->projectionMatrix[5];
+	row[1][2] = dest->projectionMatrix[9];
+	row[1][3] = dest->projectionMatrix[13];
+	row[2][0] = dest->projectionMatrix[2];
+	row[2][1] = dest->projectionMatrix[6];
+	row[2][2] = dest->projectionMatrix[10];
+	row[2][3] = dest->projectionMatrix[14];
+	row[3][0] = dest->projectionMatrix[3];
+	row[3][1] = dest->projectionMatrix[7];
+	row[3][2] = dest->projectionMatrix[11];
+	row[3][3] = dest->projectionMatrix[15];
+
+	// OpenGL's inside half-spaces: left, right, bottom, top and far.
+	for(j = 0; j < 4; j++) {
+		clipPlanes[0][j] = row[3][j] + row[0][j];
+		clipPlanes[1][j] = row[3][j] - row[0][j];
+		clipPlanes[2][j] = row[3][j] + row[1][j];
+		clipPlanes[3][j] = row[3][j] - row[1][j];
+		clipPlanes[4][j] = row[3][j] - row[2][j];
+	}
+
+	for(i = 0; i < 5; i++) {
+		vec3_t normal;
+		float dist, normalLength;
+
+		/*
+		 * World-to-eye coordinates are (-axis1, +axis2, -axis0),
+		 * matching R_RotateForViewer() and s_flipMatrix.
+		 */
+		VectorClear(normal);
+		VectorMA(normal, -clipPlanes[i][0], dest->or.axis[1], normal);
+		VectorMA(normal,  clipPlanes[i][1], dest->or.axis[2], normal);
+		VectorMA(normal, -clipPlanes[i][2], dest->or.axis[0], normal);
+		dist = DotProduct(normal, dest->or.origin) - clipPlanes[i][3];
+
+		normalLength = VectorNormalize(normal);
+		if(normalLength <= 0.000001f) {
+			// Keep a harmless plane rather than generating NaNs in BSP culling.
+			VectorSet(normal, 0.0f, 0.0f, 1.0f);
+			dist = -1.0e30f;
+		} else {
+			dist /= normalLength;
+		}
+
+		VectorCopy(normal, dest->frustum[i].normal);
+		dest->frustum[i].dist = dist;
+		dest->frustum[i].type = PLANE_NON_AXIAL;
+		SetPlaneSignbits(&dest->frustum[i]);
+	}
+
+	dest->flags |= VPF_FARPLANEFRUSTUM;
 }
 
 /*
@@ -855,184 +984,226 @@ void R_PlaneForSurface(surfaceType_t* surfType, cplane_t* plane) {
 
 /*
 =================
-R_GetPortalOrientation
+R_PortalBuildStableFrame
 
-entityNum is the entity that the portal surface is a part of, which may
-be moving and rotating.
-
-Returns true if it should be mirrored
+Build a portal frame from its inward face normal. The frame's Up axis is
+anchored to world +Z (projected onto the portal plane), so matching doorways
+cannot acquire arbitrary 180-degree roll flips from BSP vertex winding.
 =================
 */
-bool R_GetPortalOrientations(drawSurf_t* drawSurf, int entityNum, orientation_t* surface, orientation_t* camera, vec3_t pvsOrigin, bool* mirror) {
-	int i;
-	cplane_t originalPlane, plane;
-	trRefEntity_t* e;
-	float d;
-	vec3_t transformed;
+static void R_PortalBuildStableFrame(const vec3_t origin, const vec3_t inwardNormal, orientation_t* frame) {
+	vec3_t upReference;
 
-	// create plane axis for the portal we are seeing
-	R_PlaneForSurface(drawSurf->surface, &originalPlane);
-
-	// rotate the plane if necessary
-	if(entityNum != REFENTITYNUM_WORLD) {
-		tr.currentEntityNum = entityNum;
-		tr.currentEntity = &tr.refdef.entities[entityNum];
-
-		// get the orientation of the entity
-		R_RotateForEntity(tr.currentEntity, &tr.viewParms, &tr.or);
-
-		// rotate the plane, but keep the non-rotated version for matching
-		// against the portalSurface entities
-		R_LocalNormalToWorld(originalPlane.normal, plane.normal);
-		plane.dist = originalPlane.dist + DotProduct(plane.normal, tr.or.origin);
-
-		// translate the original plane
-		originalPlane.dist = originalPlane.dist + DotProduct(originalPlane.normal, tr.or.origin);
-	} else {
-		plane = originalPlane;
+	VectorCopy(origin, frame->origin);
+	VectorCopy(inwardNormal, frame->axis[0]);
+	if(VectorNormalize(frame->axis[0]) <= 0.0001f) {
+		VectorSet(frame->axis[0], 1.0f, 0.0f, 0.0f);
 	}
 
-	VectorCopy(plane.normal, surface->axis[0]);
-	PerpendicularVector(surface->axis[1], surface->axis[0]);
-	CrossProduct(surface->axis[0], surface->axis[1], surface->axis[2]);
-
-	// locate the portal entity closest to this plane.
-	// origin will be the origin of the portal, origin2 will be
-	// the origin of the camera
-	for(i = 0; i < tr.refdef.num_entities; i++) {
-		e = &tr.refdef.entities[i];
-		if(e->e.reType != RT_PORTALSURFACE) {
-			continue;
+	// Project world up onto the portal plane. For normal upright door portals
+	// this is exactly (0, 0, 1), independent of face winding or edge order.
+	VectorSet(upReference, 0.0f, 0.0f, 1.0f);
+	VectorMA(upReference, -DotProduct(upReference, frame->axis[0]), frame->axis[0], upReference);
+	if(VectorNormalize(upReference) <= 0.0001f) {
+		// A horizontal portal has no unique world-up projection. Use world +Y
+		// as a deterministic fallback, then +X for the fully degenerate case.
+		VectorSet(upReference, 0.0f, 1.0f, 0.0f);
+		VectorMA(upReference, -DotProduct(upReference, frame->axis[0]), frame->axis[0], upReference);
+		if(VectorNormalize(upReference) <= 0.0001f) {
+			VectorSet(upReference, 1.0f, 0.0f, 0.0f);
+			VectorMA(upReference, -DotProduct(upReference, frame->axis[0]), frame->axis[0], upReference);
+			VectorNormalize(upReference);
 		}
-
-		d = DotProduct(e->e.origin, originalPlane.normal) - originalPlane.dist;
-		if(d > 64 || d < -64) {
-			continue;
-		}
-
-		// get the pvsOrigin from the entity
-		VectorCopy(e->e.oldorigin, pvsOrigin);
-
-		// if the entity is just a mirror, don't use as a camera point
-		if(e->e.oldorigin[0] == e->e.origin[0] && e->e.oldorigin[1] == e->e.origin[1] && e->e.oldorigin[2] == e->e.origin[2]) {
-			VectorScale(plane.normal, plane.dist, surface->origin);
-			VectorCopy(surface->origin, camera->origin);
-			VectorSubtract(vec3_origin, surface->axis[0], camera->axis[0]);
-			VectorCopy(surface->axis[1], camera->axis[1]);
-			VectorCopy(surface->axis[2], camera->axis[2]);
-
-			*mirror = true;
-			return true;
-		}
-
-		// project the origin onto the surface plane to get
-		// an origin point we can rotate around
-		d = DotProduct(e->e.origin, plane.normal) - plane.dist;
-		VectorMA(e->e.origin, -d, surface->axis[0], surface->origin);
-
-		// now get the camera origin and orientation
-		VectorCopy(e->e.oldorigin, camera->origin);
-		AxisCopy(e->e.axis, camera->axis);
-		VectorSubtract(vec3_origin, camera->axis[0], camera->axis[0]);
-		VectorSubtract(vec3_origin, camera->axis[1], camera->axis[1]);
-
-		// optionally rotate
-		if(e->e.oldframe) {
-			// if a speed is specified
-			if(e->e.frame) {
-				// continuous rotate
-				d = (tr.refdef.time / 1000.0f) * e->e.frame;
-				VectorCopy(camera->axis[1], transformed);
-				RotatePointAroundVector(camera->axis[1], camera->axis[0], transformed, d);
-				CrossProduct(camera->axis[0], camera->axis[1], camera->axis[2]);
-			} else {
-				// bobbing rotate, with skinNum being the rotation offset
-				d = sin(tr.refdef.time * 0.003f);
-				d = e->e.skinNum + d * 4;
-				VectorCopy(camera->axis[1], transformed);
-				RotatePointAroundVector(camera->axis[1], camera->axis[0], transformed, d);
-				CrossProduct(camera->axis[0], camera->axis[1], camera->axis[2]);
-			}
-		} else if(e->e.skinNum) {
-			d = e->e.skinNum;
-			VectorCopy(camera->axis[1], transformed);
-			RotatePointAroundVector(camera->axis[1], camera->axis[0], transformed, d);
-			CrossProduct(camera->axis[0], camera->axis[1], camera->axis[2]);
-		}
-		*mirror = false;
-		return true;
 	}
 
-	// if we didn't locate a portal entity, don't render anything.
-	// We don't want to just treat it as a mirror, because without a
-	// portal entity the server won't have communicated a proper entity set
-	// in the snapshot
-
-	// unfortunately, with local movement prediction it is easily possible
-	// to see a surface before the server has communicated the matching
-	// portal surface entity, so we don't want to print anything here...
-
-	// ri.Printf( PRINT_ALL, "Portal surface without a portal entity\n" );
-
-	return false;
+	VectorCopy(upReference, frame->axis[2]);
+	CrossProduct(frame->axis[2], frame->axis[0], frame->axis[1]);
+	VectorNormalize(frame->axis[1]);
+	CrossProduct(frame->axis[0], frame->axis[1], frame->axis[2]);
+	VectorNormalize(frame->axis[2]);
 }
 
-static bool IsMirror(const drawSurf_t* drawSurf, int entityNum) {
+/*
+=================
+R_PortalFrameToWorld
+
+Transform a portal face center and inward normal from brush-local coordinates
+using the orientation of the currently rendered func_portal_in entity.
+=================
+*/
+static void R_PortalFrameToWorld(const portalInfo_t* portal, orientation_t* frame) {
+	vec3_t worldOrigin, worldNormal;
 	int i;
-	cplane_t originalPlane, plane;
-	trRefEntity_t* e;
-	float d;
 
-	// create plane axis for the portal we are seeing
-	R_PlaneForSurface(drawSurf->surface, &originalPlane);
+	VectorCopy(tr.or.origin, worldOrigin);
+	VectorClear(worldNormal);
+	for(i = 0; i < 3; i++) {
+		VectorMA(worldOrigin, portal->localOrigin[i], tr.or.axis[i], worldOrigin);
+		VectorMA(worldNormal, portal->localNormal[i], tr.or.axis[i], worldNormal);
+	}
+	R_PortalBuildStableFrame(worldOrigin, worldNormal, frame);
+}
 
-	// rotate the plane if necessary
+static void R_PortalFrameFromMap(const portalInfo_t* portal, orientation_t* frame) {
+	vec3_t entityAxis[3];
+	vec3_t worldOrigin, worldNormal;
+	int i;
+
+	AnglesToAxis(portal->angles, entityAxis);
+	VectorCopy(portal->origin, worldOrigin);
+	VectorClear(worldNormal);
+	for(i = 0; i < 3; i++) {
+		VectorMA(worldOrigin, portal->localOrigin[i], entityAxis[i], worldOrigin);
+		VectorMA(worldNormal, portal->localNormal[i], entityAxis[i], worldNormal);
+	}
+	R_PortalBuildStableFrame(worldOrigin, worldNormal, frame);
+}
+
+/*
+=================
+R_PortalOrthonormalizeViewAxis
+
+Remove tiny floating-point drift after each recursive portal transform while
+preserving the transformed forward and up directions (and therefore roll).
+=================
+*/
+static void R_PortalOrthonormalizeViewAxis(vec3_t axis[3]) {
+	if(VectorNormalize(axis[0]) <= 0.0001f) return;
+	VectorMA(axis[2], -DotProduct(axis[2], axis[0]), axis[0], axis[2]);
+	if(VectorNormalize(axis[2]) <= 0.0001f) {
+		VectorMA(axis[1], -DotProduct(axis[1], axis[0]), axis[0], axis[1]);
+		if(VectorNormalize(axis[1]) <= 0.0001f) return;
+		CrossProduct(axis[0], axis[1], axis[2]);
+		VectorNormalize(axis[2]);
+	} else {
+		CrossProduct(axis[2], axis[0], axis[1]);
+		VectorNormalize(axis[1]);
+		CrossProduct(axis[0], axis[1], axis[2]);
+		VectorNormalize(axis[2]);
+	}
+}
+
+/*
+=================
+R_GetPortalOrientations
+
+Resolve the visible func_portal_in brush to its paired func_portal_out endpoint.
+No RT_PORTALSURFACE / misc_portal_surface entity is involved.
+=================
+*/
+static bool R_GetPortalOrientations(int entityNum, orientation_t* surface, orientation_t* camera, vec3_t pvsOrigin, bool* mirror) {
+	const refEntity_t* entity;
+	portalInfo_t* input = NULL;
+	portalInfo_t* output;
+	int i;
+
+	if(!tr.world || entityNum < 0 || entityNum >= tr.refdef.num_entities) return false;
+	entity = &tr.refdef.entities[entityNum].e;
+
+	for(i = 0; i < tr.world->numPortals; i++) {
+		if(tr.world->portals[i].isInput && tr.world->portals[i].modelHandle == entity->hModel) {
+			vec3_t delta;
+			VectorSubtract(entity->origin, tr.world->portals[i].origin, delta);
+			if(VectorLengthSquared(delta) < 1.0f) {
+				input = &tr.world->portals[i];
+				break;
+			}
+			// Keep a model-handle fallback for callers that apply an entity offset.
+			if(!input) input = &tr.world->portals[i];
+		}
+	}
+	if(!input || input->targetIndex < 0 || input->targetIndex >= tr.world->numPortals) return false;
+
+	output = &tr.world->portals[input->targetIndex];
+	if(output->isInput) return false;
+
+	// The source endpoint may be submitted as a normal inline brush model.
+	R_RotateForEntity(&tr.refdef.entities[entityNum], &tr.viewParms, &tr.or);
+	R_PortalFrameToWorld(input, surface);
+	R_PortalFrameFromMap(output, camera);
+
+	// Source-style portal transform: rotate the destination frame 180 degrees
+	// around its stable Up axis. The same frame transform is applied to camera
+	// position and all three view axes at every recursion depth.
+	VectorScale(camera->axis[0], -1.0f, camera->axis[0]);
+	VectorScale(camera->axis[1], -1.0f, camera->axis[1]);
+
+	VectorCopy(camera->origin, pvsOrigin);
+	// axis[0] was reversed above, so it points toward the side where the
+	// remote camera is placed. Offset the PVS origin just off the exit plane.
+	VectorMA(pvsOrigin, 2.0f, camera->axis[0], pvsOrigin);
+
+	*mirror = false;
+	return true;
+}
+
+static bool R_GetMirrorOrientations(drawSurf_t* drawSurf, int entityNum, orientation_t* surface, orientation_t* camera) {
+	cplane_t localPlane, worldPlane;
+	int i;
+
+	float normalLength;
+
+	R_PlaneForSurface(drawSurf->surface, &localPlane);
+	normalLength = VectorNormalize(localPlane.normal);
+	if(normalLength <= 0.0001f) return false;
+	localPlane.dist /= normalLength;
+
 	if(entityNum != REFENTITYNUM_WORLD) {
+		if(entityNum < 0 || entityNum >= tr.refdef.num_entities) return false;
 		tr.currentEntityNum = entityNum;
 		tr.currentEntity = &tr.refdef.entities[entityNum];
-
-		// get the orientation of the entity
 		R_RotateForEntity(tr.currentEntity, &tr.viewParms, &tr.or);
-
-		// rotate the plane, but keep the non-rotated version for matching
-		// against the portalSurface entities
-		R_LocalNormalToWorld(originalPlane.normal, plane.normal);
-		plane.dist = originalPlane.dist + DotProduct(plane.normal, tr.or.origin);
-
-		// translate the original plane
-		originalPlane.dist = originalPlane.dist + DotProduct(originalPlane.normal, tr.or.origin);
+		R_LocalNormalToWorld(localPlane.normal, worldPlane.normal);
+		normalLength = VectorLength(worldPlane.normal);
+		if(normalLength <= 0.0001f) return false;
+		worldPlane.dist = (localPlane.dist + DotProduct(worldPlane.normal, tr.or.origin)) / normalLength;
+		VectorScale(worldPlane.normal, 1.0f / normalLength, worldPlane.normal);
+	} else {
+		worldPlane = localPlane;
 	}
 
-	// locate the portal entity closest to this plane.
-	// origin will be the origin of the portal, origin2 will be
-	// the origin of the camera
-	for(i = 0; i < tr.refdef.num_entities; i++) {
-		e = &tr.refdef.entities[i];
-		if(e->e.reType != RT_PORTALSURFACE) {
-			continue;
-		}
+	VectorCopy(worldPlane.normal, surface->axis[0]);
+	PerpendicularVector(surface->axis[1], surface->axis[0]);
+	CrossProduct(surface->axis[0], surface->axis[1], surface->axis[2]);
+	VectorScale(surface->axis[0], worldPlane.dist, surface->origin);
 
-		d = DotProduct(e->e.origin, originalPlane.normal) - originalPlane.dist;
-		if(d > 64 || d < -64) {
-			continue;
-		}
+	VectorCopy(surface->origin, camera->origin);
+	VectorScale(surface->axis[0], -1.0f, camera->axis[0]);
+	VectorCopy(surface->axis[1], camera->axis[1]);
+	VectorCopy(surface->axis[2], camera->axis[2]);
 
-		// if the entity is just a mirror, don't use as a camera point
-		if(e->e.oldorigin[0] == e->e.origin[0] && e->e.oldorigin[1] == e->e.origin[1] && e->e.oldorigin[2] == e->e.origin[2]) {
-			return true;
-		}
+	for(i = 0; i < 3; i++) VectorNormalize(camera->axis[i]);
+	return true;
+}
 
-		return false;
+/*
+** R_GetViewScissorRect
+**
+** Returns the active scissor rectangle, or the full viewport when none is set.
+*/
+static void R_GetViewScissorRect(const viewParms_t* parms, int rect[4]) {
+	if(parms->scissorWidth > 0 && parms->scissorHeight > 0) {
+		rect[0] = parms->scissorX;
+		rect[1] = parms->scissorY;
+		rect[2] = parms->scissorX + parms->scissorWidth;
+		rect[3] = parms->scissorY + parms->scissorHeight;
+	} else {
+		rect[0] = parms->viewportX;
+		rect[1] = parms->viewportY;
+		rect[2] = parms->viewportX + parms->viewportWidth;
+		rect[3] = parms->viewportY + parms->viewportHeight;
 	}
-	return false;
 }
 
 /*
 ** SurfIsOffscreen
 **
-** Determines if a surface is completely offscreen.
+** Determines if a surface is completely offscreen and, when visible, returns
+** a conservative screen-space rectangle for its aperture. The child portal
+** view keeps the parent's projection viewport and uses this rectangle only
+** as a scissor, so each visible portal paints its own part of the framebuffer.
 */
-static bool SurfIsOffscreen(const drawSurf_t* drawSurf, vec4_t clipDest[128]) {
+static bool SurfIsOffscreen(const drawSurf_t* drawSurf, int outScissor[4]) {
 	float shortest = 100000000;
 	int entityNum;
 	int numTriangles;
@@ -1042,10 +1213,22 @@ static bool SurfIsOffscreen(const drawSurf_t* drawSurf, vec4_t clipDest[128]) {
 	vec4_t clip, eye;
 	int i;
 	unsigned int pointAnd = (unsigned int)~0;
-
-	R_RotateForViewer();
+	float minX = 1.0e30f, minY = 1.0e30f;
+	float maxX = -1.0e30f, maxY = -1.0e30f;
+	bool crossesEye = false;
+	int parentScissor[4];
 
 	R_DecomposeSort(drawSurf->sort, &entityNum, &shader, &fogNum, &dlighted);
+
+	if(entityNum == REFENTITYNUM_WORLD) {
+		R_RotateForViewer();
+	} else {
+		if(entityNum < 0 || entityNum >= tr.refdef.num_entities) return true;
+		tr.currentEntityNum = entityNum;
+		tr.currentEntity = &tr.refdef.entities[entityNum];
+		R_RotateForEntity(tr.currentEntity, &tr.viewParms, &tr.or);
+	}
+
 	RB_BeginSurface(shader, fogNum, drawSurf->useCubemap, drawSurf->cubemapOrigin, drawSurf->cubemapBound);
 	rb_surfaceTable[*drawSurf->surface](drawSurf->surface);
 
@@ -1054,6 +1237,7 @@ static bool SurfIsOffscreen(const drawSurf_t* drawSurf, vec4_t clipDest[128]) {
 	for(i = 0; i < tess.numVertexes; i++) {
 		int j;
 		unsigned int pointFlags = 0;
+		float sx, sy;
 
 		R_TransformModelToClip(tess.xyz[i], tr.or.modelMatrix, tr.viewParms.projectionMatrix, eye, clip);
 
@@ -1065,53 +1249,123 @@ static bool SurfIsOffscreen(const drawSurf_t* drawSurf, vec4_t clipDest[128]) {
 			}
 		}
 		pointAnd &= pointFlags;
+
+		// A vertex behind the eye can make projected bounds unbounded. In that
+		// unusual case use the inherited scissor rather than risk clipping the
+		// portal image away.
+		if(clip[3] <= 0.001f) {
+			crossesEye = true;
+			continue;
+		}
+
+		sx = tr.viewParms.viewportX + (clip[0] / clip[3] * 0.5f + 0.5f) * tr.viewParms.viewportWidth;
+		sy = tr.viewParms.viewportY + (clip[1] / clip[3] * 0.5f + 0.5f) * tr.viewParms.viewportHeight;
+		if(sx < minX) minX = sx;
+		if(sx > maxX) maxX = sx;
+		if(sy < minY) minY = sy;
+		if(sy > maxY) maxY = sy;
 	}
 
 	// trivially reject
-	if(pointAnd) {
-		return true;
-	}
+	if(pointAnd) return true;
 
-	// determine if this surface is backfaced and also determine the distance
-	// to the nearest vertex so we can cull based on portal range.  Culling
-	// based on vertex distance isn't 100% correct (we should be checking for
-	// range to the surface), but it's good enough for the types of portals
-	// we have in the game right now.
+	// determine if the surface is backfaced and also determine the distance
+	// to the nearest vertex so we can cull based on portal range.
 	numTriangles = tess.numIndexes / 3;
 
 	for(i = 0; i < tess.numIndexes; i += 3) {
 		vec3_t normal, tNormal;
-
 		float len;
 
-		VectorSubtract(tess.xyz[tess.indexes[i]], tr.viewParms.or.origin, normal);
-
-		len = VectorLengthSquared(normal);  // lose the sqrt
-		if(len < shortest) {
-			shortest = len;
-		}
+		VectorSubtract(tess.xyz[tess.indexes[i]], tr.or.viewOrigin, normal);
+		len = VectorLengthSquared(normal);
+		if(len < shortest) shortest = len;
 
 		R_VaoUnpackNormal(tNormal, tess.normal[tess.indexes[i]]);
-
-		if(DotProduct(normal, tNormal) >= 0) {
-			numTriangles--;
-		}
+		if(DotProduct(normal, tNormal) >= 0) numTriangles--;
 	}
-	if(!numTriangles) {
+	if(!numTriangles) return true;
+
+	// Mirror surfaces do not fade out by portalRange. Portal surfaces still use
+	// the configured range as a cheap visibility limit.
+	if(tess.shader->isMirror) {
+		// no range test
+	} else if(tess.shader->isPortal && shortest > (tess.shader->portalRange * tess.shader->portalRange)) {
 		return true;
 	}
 
-	// mirrors can early out at this point, since we don't do a fade over distance
-	// with them (although we could)
-	if(IsMirror(drawSurf, entityNum)) {
-		return false;
+	R_GetViewScissorRect(&tr.viewParms, parentScissor);
+	if(crossesEye || minX > maxX || minY > maxY) {
+		outScissor[0] = parentScissor[0];
+		outScissor[1] = parentScissor[1];
+		outScissor[2] = parentScissor[2];
+		outScissor[3] = parentScissor[3];
+	} else {
+		int x0 = (int)floorf(minX);
+		int y0 = (int)floorf(minY);
+		int x1 = (int)ceilf(maxX);
+		int y1 = (int)ceilf(maxY);
+
+		// Clamp to this view's viewport before intersecting the inherited
+		// scissor. The resulting rectangle is conservative for clipped faces.
+		if(x0 < tr.viewParms.viewportX) x0 = tr.viewParms.viewportX;
+		if(y0 < tr.viewParms.viewportY) y0 = tr.viewParms.viewportY;
+		if(x1 > tr.viewParms.viewportX + tr.viewParms.viewportWidth) x1 = tr.viewParms.viewportX + tr.viewParms.viewportWidth;
+		if(y1 > tr.viewParms.viewportY + tr.viewParms.viewportHeight) y1 = tr.viewParms.viewportY + tr.viewParms.viewportHeight;
+
+		outScissor[0] = MAX(x0, parentScissor[0]);
+		outScissor[1] = MAX(y0, parentScissor[1]);
+		outScissor[2] = MIN(x1, parentScissor[2]);
+		outScissor[3] = MIN(y1, parentScissor[3]);
 	}
 
-	if(shortest > (tess.shader->portalRange * tess.shader->portalRange)) {
-		return true;
-	}
-
+	if(outScissor[2] <= outScissor[0] || outScissor[3] <= outScissor[1]) return true;
 	return false;
+}
+
+/*
+========================
+R_RenderPortalSkybox
+
+Render the map's existing 3D skybox from a portal's virtual camera. The
+portal aperture scissor and target framebuffer are inherited from the portal
+view. This is only called for recursion level one; nested portal views keep
+the already-rendered parent skybox in the color buffer.
+========================
+*/
+static bool R_RenderPortalSkybox(viewParms_t* portalParms) {
+	viewParms_t skyParms;
+	bool insideSkyboxVolume = false;
+
+	if(!portalParms || !tr.world || !tr.world->hasSkybox || !r_3dsky->integer || tr.hideSky) return false;
+	if(tr.world->skyboxScale <= 0.0001f) return false;
+
+	skyParms = *portalParms;
+
+	// Match RE_RenderScene's existing misc_skybox camera placement. If the
+	// virtual camera is inside any individual VOLUME_SKY brush area, it is
+	// already expressed in mini-world coordinates and must not be scaled.
+	insideSkyboxVolume = R_PointInSkyGroupVolume(tr.world, portalParms->or.origin);
+
+	if(insideSkyboxVolume) {
+		VectorCopy(portalParms->or.origin, skyParms.or.origin);
+	} else {
+		VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, portalParms->or.origin, skyParms.or.origin);
+	}
+	VectorCopy(skyParms.or.origin, skyParms.pvsOrigin);
+
+	// The skybox is a separate mini-world pass: it must not inherit the
+	// portal clip plane, mirror winding, sunlight/shadow flags, or recursion.
+	// Keep the portal viewport/scissor/FBO so only this aperture is painted.
+	skyParms.isPortal = false;
+	skyParms.isMirror = false;
+	skyParms.portalRecursion = 8;
+	skyParms.flags = VPF_SKYBOX3D | VPF_NOVIEWMODEL;
+	skyParms.hasWaterReflection = false;
+
+	R_RenderView(&skyParms);
+	portalParms->flags |= VPF_SKYDRAWN;
+	return true;
 }
 
 /*
@@ -1122,19 +1376,20 @@ Returns true if another view has been rendered
 ========================
 */
 bool R_MirrorViewBySurface(drawSurf_t* drawSurf, int entityNum) {
-	vec4_t clipDest[128];
 	viewParms_t newParms;
 	viewParms_t oldParms;
 	orientation_t surface, camera;
+	int portalScissor[4];
+	int recursionLimit;
 
-	// don't recursively mirror
-	if(tr.viewParms.isPortal) {
-		ri.Printf(PRINT_DEVELOPER, "WARNING: recursive mirror/portal found\n");
-		return false;
-	}
+	// r_recursionCount is the number of portal/mirror transitions allowed
+	// below the primary camera. Clamp it to keep malformed maps from causing
+	// unbounded recursive view generation.
+	recursionLimit = Com_Clamp(0, 8, r_recursionCount ? r_recursionCount->integer : 2);
+	if(tr.viewParms.portalRecursion >= recursionLimit) return false;
 
 	// trivially reject portal/mirror
-	if(SurfIsOffscreen(drawSurf, clipDest)) {
+	if(SurfIsOffscreen(drawSurf, portalScissor)) {
 		return false;
 	}
 
@@ -1143,10 +1398,21 @@ bool R_MirrorViewBySurface(drawSurf_t* drawSurf, int entityNum) {
 
 	newParms = tr.viewParms;
 	newParms.isPortal = true;
+	newParms.portalRecursion = oldParms.portalRecursion + 1;
+	newParms.scissorX = portalScissor[0];
+	newParms.scissorY = portalScissor[1];
+	newParms.scissorWidth = portalScissor[2] - portalScissor[0];
+	newParms.scissorHeight = portalScissor[3] - portalScissor[1];
 	newParms.zFar = 0.0f;
 	newParms.flags &= ~VPF_FARPLANEFRUSTUM;
-	if(!R_GetPortalOrientations(drawSurf, entityNum, &surface, &camera, newParms.pvsOrigin, &newParms.isMirror)) {
-		return false;  // bad portal, no portalentity
+	if(tess.shader->isMirror) {
+		if(!R_GetMirrorOrientations(drawSurf, entityNum, &surface, &camera)) return false;
+		newParms.isMirror = true;
+		VectorCopy(surface.origin, newParms.pvsOrigin);
+	} else if(tess.shader->isPortal) {
+		if(!R_GetPortalOrientations(entityNum, &surface, &camera, newParms.pvsOrigin, &newParms.isMirror)) return false;
+	} else {
+		return false;
 	}
 
 	// Never draw viewmodels in portal or mirror views.
@@ -1154,12 +1420,36 @@ bool R_MirrorViewBySurface(drawSurf_t* drawSurf, int entityNum) {
 
 	R_MirrorPoint(oldParms.or.origin, &surface, &camera, newParms.or.origin);
 
-	VectorSubtract(vec3_origin, camera.axis[0], newParms.portalPlane.normal);
+	// The oblique near plane must point from the virtual camera through the
+	// aperture into the visible room. func_portal_in/out frames have already
+	// had their destination forward axis reversed in R_GetPortalOrientations,
+	// while the mirror frame uses the opposite convention.
+	if(tess.shader->isPortal) {
+		VectorCopy(camera.axis[0], newParms.portalPlane.normal);
+	} else {
+		VectorScale(camera.axis[0], -1.0f, newParms.portalPlane.normal);
+	}
 	newParms.portalPlane.dist = DotProduct(camera.origin, newParms.portalPlane.normal);
 
+	// Apply the exact same source-to-destination transform to the camera basis.
+	// Nested portals must compose the transform from their parent view instead
+	// of copying the primary camera axes (the old behaviour lost every other turn).
 	R_MirrorVector(oldParms.or.axis[0], &surface, &camera, newParms.or.axis[0]);
 	R_MirrorVector(oldParms.or.axis[1], &surface, &camera, newParms.or.axis[1]);
 	R_MirrorVector(oldParms.or.axis[2], &surface, &camera, newParms.or.axis[2]);
+	if(tess.shader->isPortal) R_PortalOrthonormalizeViewAxis(newParms.or.axis);
+
+	/*
+	 * The primary camera may already have drawn its own 3D skybox and carries
+	 * VPF_SKYDRAWN into this child view. That image belongs to the player's
+	 * location, not to the portal destination. Redraw the destination skybox
+	 * once for each first-level portal. Deeper recursion intentionally keeps
+	 * the parent's skybox in the color buffer and does not overwrite it.
+	 */
+	if(tess.shader->isPortal && newParms.portalRecursion == 1 && r_portalRedrawSkybox && r_portalRedrawSkybox->integer) {
+		newParms.flags &= ~VPF_SKYDRAWN;
+		R_RenderPortalSkybox(&newParms);
+	}
 
 	// OPTIMIZE: restrict the viewport on the mirrored view
 
@@ -1337,10 +1627,11 @@ void R_SortDrawSurfs(drawSurf_t* drawSurfs, int numDrawSurfs) {
 			ri.Error(ERR_DROP, "Shader '%s'with sort == SS_BAD", shader->name);
 		}
 
-		// if the mirror was completely clipped away, we may need to check another surface
-		if(R_MirrorViewBySurface((drawSurfs + i), entityNum)) {
-			break;  // only one mirror view at a time
-		}
+		// Render every visible portal/mirror surface. Each child view is
+		// restricted to that aperture's screen-space scissor, so later portals
+		// do not overwrite unrelated portal images. Nested views repeat this
+		// pass until r_recursionCount is reached.
+		R_MirrorViewBySurface((drawSurfs + i), entityNum);
 	}
 
 	R_AddDrawSurfCmd(drawSurfs, numDrawSurfs);
@@ -1374,7 +1665,7 @@ static void R_AddEntitySurface(int entityNum) {
 
 	// simple generated models, like sprites and beams, are not culled
 	switch(ent->e.reType) {
-		case RT_PORTALSURFACE: break;  // don't draw anything
+		case RT_PORTALSURFACE: break;  // legacy surface entities are ignored; portals use func_portal_in/out brushes
 		case RT_SPRITE:
 			// self blood sprites, talk balloons, etc should not be drawn in the primary
 			// view.  We can't just do this check for all entities, because md3
@@ -1433,11 +1724,11 @@ void R_GenerateDrawSurfs(void) {
 
 	if(!(tr.viewParms.flags & VPF_CUBEMAP)) R_AddPolygonSurfaces();
 
-	// dynamically compute far clip plane distance
-	if(!(tr.viewParms.flags & VPF_SHADOWMAPS)) R_SetFarClip();
-
-	// we know the size of the clipping volume. Now set the rest of the projection matrix.
-	R_SetupProjectionZ(&tr.viewParms);
+	// The portal projection (including its oblique depth row and matching
+	// extracted frustum) is finalized before BSP traversal in R_RenderView.
+	// The primary camera still derives zFar from visBounds after world visibility.
+	if(!(tr.viewParms.flags & VPF_SHADOWMAPS) && !tr.viewParms.isPortal) R_SetFarClip();
+	if(!tr.viewParms.isPortal) R_SetupProjectionZ(&tr.viewParms);
 
 	R_AddEntitySurfaces();
 }
@@ -1480,45 +1771,68 @@ void R_DebugPolygon(int color, int numPoints, float* points) {
 =================
 R_NoteWaterSurface
 
-Called for every visible world surface that lies on a horizontal water plane
-(r_planarReflections). Remembers the nearest one; R_RenderView() then renders
-the mirrored view of exactly that plane, once per frame.
+Called for every visible planar surface marked with the `water` shader keyword.
+Stores the closest eligible world-space plane, including transformed brush faces.
 =================
 */
 void R_NoteWaterSurface(const msurface_t* surf) {
 	const vec_t* origin = tr.viewParms.or.origin;
-	float distSq = 0.0f;
-	int i;
+	cplane_t plane;
+	vec3_t center, bounds[2], corner, worldCorner;
+	float signedDistance, distSq = 0.0f;
+	float normalLength;
+	int i, bits;
 
-	if(!r_planarReflections->integer || !tr.waterReflectionFbo) return;
+	if(!r_planarReflections->integer || !tr.waterReflectionFbo || !surf->isWaterPlane) return;
 
-	// only the real camera view; never inside the cubemap / shadow / mirror / reflection views
+	// Only the primary view may choose a reflection plane. Do not recurse into
+	// portals, mirrors, cubemaps, or shadow passes.
 	if(tr.viewParms.isPortal || (tr.viewParms.flags & (VPF_CUBEMAP | VPF_WATERREFLECTION | VPF_SHADOWMAPS | VPF_DEPTHSHADOW | VPF_DLIGHTSHADOW)) || (tr.refdef.rdflags & RDF_NOWORLDMODEL)) return;
 
-	// surface bounds are world space only for the world model itself
-	if(tr.currentEntityNum != REFENTITYNUM_WORLD) return;
+	// World surfaces are already in world space. Inline brush surfaces are
+	// stored in model-local space and must follow the current entity transform.
+	if(tr.currentEntityNum == REFENTITYNUM_WORLD) {
+		plane = surf->waterPlane;
+		VectorCopy(surf->waterCenter, center);
+		for(i = 0; i < 3; i++) {
+			bounds[0][i] = surf->cullinfo.bounds[0][i];
+			bounds[1][i] = surf->cullinfo.bounds[1][i];
+		}
+	} else {
+		R_LocalNormalToWorld(surf->waterPlane.normal, plane.normal);
+		normalLength = VectorLength(plane.normal);
+		if(normalLength <= 0.0001f) return;
+		plane.dist = (surf->waterPlane.dist + DotProduct(plane.normal, tr.or.origin)) / normalLength;
+		VectorScale(plane.normal, 1.0f / normalLength, plane.normal);
+		R_LocalPointToWorld(surf->waterCenter, center);
 
-	// the mirrored view is only valid for a camera above the plane;
-	// below the water the cubemap path is used as before
-	if(origin[2] <= surf->waterHeight + 1.0f) return;
+		ClearBounds(bounds[0], bounds[1]);
+		for(bits = 0; bits < 8; bits++) {
+			for(i = 0; i < 3; i++) corner[i] = (bits & (1 << i)) ? surf->cullinfo.bounds[1][i] : surf->cullinfo.bounds[0][i];
+			R_LocalPointToWorld(corner, worldCorner);
+			AddPointToBounds(worldCorner, bounds[0], bounds[1]);
+		}
+	}
 
-	// squared distance from the camera to the bounds of the surface (stable for big lakes)
+	// Keep the authored face orientation: only reflect when the camera is on
+	// its front side. This works for vertical and sloped planes as well as Z-up.
+	signedDistance = DotProduct(origin, plane.normal) - plane.dist;
+	if(signedDistance <= 1.0f) return;
+
+	// Distance from the camera to the transformed surface AABB. This lets
+	// world and inline-brush water participate in the same nearest-plane choice.
 	for(i = 0; i < 3; i++) {
 		float d = 0.0f;
-
-		if(origin[i] < surf->cullinfo.bounds[0][i])
-			d = surf->cullinfo.bounds[0][i] - origin[i];
-		else if(origin[i] > surf->cullinfo.bounds[1][i])
-			d = origin[i] - surf->cullinfo.bounds[1][i];
-
+		if(origin[i] < bounds[0][i]) d = bounds[0][i] - origin[i];
+		else if(origin[i] > bounds[1][i]) d = origin[i] - bounds[1][i];
 		distSq += d * d;
 	}
 
 	if(!tr.waterFound || distSq < tr.waterFoundDistSq) {
 		tr.waterFound = true;
 		tr.waterFoundDistSq = distSq;
-		tr.waterFoundHeight = surf->waterHeight;
-		VectorCopy(surf->waterCenter, tr.waterFoundCenter);
+		tr.waterFoundPlane = plane;
+		VectorCopy(center, tr.waterFoundCenter);
 	}
 }
 
@@ -1526,56 +1840,55 @@ void R_NoteWaterSurface(const msurface_t* surf) {
 =================
 R_RenderWaterReflection
 
-Planar reflection like in the Source engine: the camera is mirrored in the water plane
-and the scene above the plane is rendered into tr.waterReflectionImage. The view is queued
-before the current (main) view, exactly like R_MirrorViewBySurface() does for portals.
-
-The shader (lightall_fp.glsl) projects every water fragment with the viewProjection of the
-mirrored camera, which is stored in the viewParms of the main view.
+Render the scene from a camera reflected across the closest visible `water`
+shader plane. The plane is arbitrary in world space; it is not restricted to Z.
 =================
 */
 void R_RenderWaterReflection(void) {
 	viewParms_t oldParms, newParms;
 	orientation_t surface, camera;
-	float height = tr.waterFoundHeight;
+	cplane_t plane = tr.waterFoundPlane;
 	mat4_t viewProj;
+	int i;
+	float normalLength;
+
+	normalLength = VectorNormalize(plane.normal);
+	if(normalLength <= 0.0001f) return;
+	plane.dist /= normalLength;
 
 	oldParms = tr.viewParms;
 	newParms = tr.viewParms;
 
-	// mirror plane: horizontal at the water level, facing up
-	VectorSet(surface.origin, 0.0f, 0.0f, height);
-	VectorSet(surface.axis[0], 0.0f, 0.0f, 1.0f);
-	VectorSet(surface.axis[1], 1.0f, 0.0f, 0.0f);
-	VectorSet(surface.axis[2], 0.0f, 1.0f, 0.0f);
-
+	// Build a stable orthonormal frame with its first axis along the plane normal.
+	VectorScale(plane.normal, plane.dist, surface.origin);
+	VectorCopy(plane.normal, surface.axis[0]);
+	PerpendicularVector(surface.axis[1], surface.axis[0]);
+	CrossProduct(surface.axis[0], surface.axis[1], surface.axis[2]);
 	VectorCopy(surface.origin, camera.origin);
-	VectorSubtract(vec3_origin, surface.axis[0], camera.axis[0]);
+	VectorScale(surface.axis[0], -1.0f, camera.axis[0]);
 	VectorCopy(surface.axis[1], camera.axis[1]);
 	VectorCopy(surface.axis[2], camera.axis[2]);
 
-	newParms.isPortal = true;  // oblique near plane clipping at portalPlane, own player is visible
-	newParms.isMirror = true;  // invert face culling
+	newParms.isPortal = true;  // oblique near-plane clipping
+	newParms.isMirror = true;  // mirrored axes require reversed face culling
+	// Keep the historical behavior: water reflection views do not spawn a
+	// second tree of portal/mirror views. r_recursionCount is for real portal
+	// and mirror apertures, not for this auxiliary reflection pass.
+	newParms.portalRecursion = Com_Clamp(0, 8, r_recursionCount ? r_recursionCount->integer : 2);
 	newParms.zFar = 0.0f;
-	// VPF_SKYDRAWN здесь НЕ наследуется: это маркер "проход 2 уже отрисовал скайбокс",
-	// а у отражения свой двухпроходный цикл — проход 1 (VPF_SKYBOX3D) обязан нарисовать
-	// небо заново, и только затем проход 2 получает VPF_SKYDRAWN (см. ниже)
 	newParms.flags &= ~(VPF_FARPLANEFRUSTUM | VPF_USESUNLIGHT | VPF_SKYDRAWN);
 	newParms.flags |= VPF_NOVIEWMODEL | VPF_WATERREFLECTION;
 	newParms.hasWaterReflection = false;
 
 	R_MirrorPoint(oldParms.or.origin, &surface, &camera, newParms.or.origin);
-	R_MirrorVector(oldParms.or.axis[0], &surface, &camera, newParms.or.axis[0]);
-	R_MirrorVector(oldParms.or.axis[1], &surface, &camera, newParms.or.axis[1]);
-	R_MirrorVector(oldParms.or.axis[2], &surface, &camera, newParms.or.axis[2]);
+	for(i = 0; i < 3; i++) R_MirrorVector(oldParms.or.axis[i], &surface, &camera, newParms.or.axis[i]);
 
-	// clip everything below the water
-	VectorSet(newParms.portalPlane.normal, 0.0f, 0.0f, 1.0f);
-	newParms.portalPlane.dist = height;
+	// Keep the half-space on the side from which the original camera viewed water.
+	VectorCopy(plane.normal, newParms.portalPlane.normal);
+	newParms.portalPlane.dist = plane.dist;
 
-	// potentially visible set of the reflection: seen from just above the water surface
 	VectorCopy(tr.waterFoundCenter, newParms.pvsOrigin);
-	newParms.pvsOrigin[2] += 2.0f;
+	VectorMA(newParms.pvsOrigin, 2.0f, plane.normal, newParms.pvsOrigin);
 
 	newParms.viewportX = 0;
 	newParms.viewportY = 0;
@@ -1584,33 +1897,23 @@ void R_RenderWaterReflection(void) {
 	newParms.targetFbo = tr.waterReflectionFbo;
 	newParms.targetFboLayer = 0;
 
-	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && r_planarReflectionsSkybox->integer) {
+	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && r_planarReflectionsSkybox->integer) {
 		viewParms_t skyParms = newParms;
-
 		VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, newParms.or.origin, skyParms.or.origin);
 		VectorCopy(skyParms.or.origin, skyParms.pvsOrigin);
 		skyParms.flags = newParms.flags | VPF_SKYBOX3D;
-
-		// oblique-клип по плоскости воды к мини-миру не относится: камера скайбокса
-		// живёт в другом месте карты, и плоскость воды главного мира обрезала бы
-		// его геометрию (или весь мини-мир целиком). isMirror остаётся — оси
-		// камеры зеркальные, компенсация winding нужна.
+		// The water clip plane belongs to the main world, not the separate 3D skybox.
 		skyParms.isPortal = false;
-
 		R_RenderView(&skyParms);
-
 		newParms.flags |= VPF_SKYDRAWN | VPF_KEEPCOLOR;
 	}
 
 	R_RenderView(&newParms);
-
-	// tr.viewParms is now the mirrored view. The oblique near plane only changes the z row of the
-	// projection, so x/y/w (all the shader needs) are the plain projection of the mirrored camera.
 	Mat4Multiply(tr.viewParms.projectionMatrix, tr.viewParms.world.modelMatrix, viewProj);
 
 	tr.viewParms = oldParms;
 	tr.viewParms.hasWaterReflection = true;
-	tr.viewParms.waterReflectHeight = height;
+	tr.viewParms.waterReflectPlane = plane;
 	Mat4Copy(viewProj, tr.viewParms.waterReflectMatrix);
 }
 
@@ -1668,6 +1971,10 @@ void R_RenderView(viewParms_t* parms) {
 	tr.viewParms.frameCount = tr.frameCount;
 	R_SetupVolumeRules(&tr.viewParms);
 
+	// Portal cameras need their map-sized far clip before projection/frustum
+	// setup. The primary view keeps its existing visBounds-based calculation.
+	if(tr.viewParms.isPortal && !(tr.viewParms.flags & VPF_SHADOWMAPS)) R_SetFarClip();
+
 	firstDrawSurf = tr.refdef.numDrawSurfs;
 
 	tr.viewCount++;
@@ -1676,6 +1983,16 @@ void R_RenderView(viewParms_t* parms) {
 	R_RotateForViewer();
 
 	R_SetupProjection(&tr.viewParms, 64, tr.viewParms.zFar, true);
+	if(tr.viewParms.isPortal) {
+		/*
+		 * Finalize the oblique portal projection BEFORE BSP traversal.
+		 * Its far clip plane is no longer perpendicular to the view axis at
+		 * oblique angles, so culling must use planes extracted from this exact
+		 * matrix rather than the pre-oblique symmetric frustum.
+		 */
+		R_SetupProjectionZ(&tr.viewParms);
+		R_SetupFrustumFromProjection(&tr.viewParms);
+	}
 
 	// R_AddWorldSurface() notes the nearest planar water surface of this view
 	tr.waterFound = false;
@@ -2207,7 +2524,7 @@ void R_RenderCubemapSide(int cubemapSide, bool subscene) {
 	// 3D skybox в кубмапах отражений: тот же двухпроходный приём, что и в
 	// основном виде, — сначала небо и мини-мир камерой скайбокса, поверх —
 	// геометрия основного мира. Управляется r_cubeReflectionsSkybox.
-	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && r_cubeReflectionsSkybox->integer) {
+	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && r_cubeReflectionsSkybox->integer) {
 		viewParms_t skyParms = parms;
 
 		VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, parms.or.origin, skyParms.or.origin);

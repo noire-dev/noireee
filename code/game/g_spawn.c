@@ -113,6 +113,8 @@ void SP_func_rotating(gentity_t* ent);
 void SP_func_bobbing(gentity_t* ent);
 void SP_func_pendulum(gentity_t* ent);
 void SP_func_button(gentity_t* ent);
+void SP_func_portal_in(gentity_t* ent);
+void SP_func_portal_out(gentity_t* ent);
 void SP_func_door(gentity_t* ent);
 void SP_func_train(gentity_t* ent);
 void SP_func_timer(gentity_t* self);
@@ -141,6 +143,8 @@ spawn_t spawns[] = {// info entities don't do anything at all, but provide posit
 
                     {"func_plat", SP_func_plat},
                     {"func_button", SP_func_button},
+                    {"func_portal_in", SP_func_portal_in},
+                    {"func_portal_out", SP_func_portal_out},
                     {"func_door", SP_func_door},
                     {"func_static", SP_func_static},
                     {"func_rotating", SP_func_rotating},

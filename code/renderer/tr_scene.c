@@ -896,6 +896,7 @@ void RE_BeginScene(const refdef_t* fd) {
 	tr.volumeFlags = tr.world ? tr.world->baseVolumeFlags : 0;
 	tr.volumeShowOnly = false;
 	tr.volumeShowFlags = 0;
+	tr.hideSky = false;
 	if(tr.world && !(tr.refdef.rdflags & RDF_NOWORLDMODEL)) {
 		int i;
 
@@ -903,6 +904,7 @@ void RE_BeginScene(const refdef_t* fd) {
 			displayInfo_t* di = &tr.world->displays[i];
 
 			if(tr.refdef.vieworg[0] >= di->bounds[0][0] && tr.refdef.vieworg[0] <= di->bounds[1][0] && tr.refdef.vieworg[1] >= di->bounds[0][1] && tr.refdef.vieworg[1] <= di->bounds[1][1] && tr.refdef.vieworg[2] >= di->bounds[0][2] && tr.refdef.vieworg[2] <= di->bounds[1][2]) {
+				tr.hideSky = di->hideSky;
 				if(di->whitelist) {
 					// whitelist: РИСУЙ ТОЛЬКО поверхности с volumeFlags из списка
 					tr.volumeShowOnly = true;
@@ -956,6 +958,41 @@ void RE_EndScene(void) {
 }
 
 /*
+=====================
+R_AddMapPortalEntities
+
+Insert the map-authored func_portal_in brush models into the current scene.
+The renderer owns these static entities; func_portal_out is only a destination
+frame and is deliberately not submitted for drawing.
+=====================
+*/
+void R_AddMapPortalEntities(void) {
+	int i;
+
+	if(!tr.world) return;
+
+	for(i = 0; i < tr.world->numPortals; i++) {
+		const portalInfo_t* portal = &tr.world->portals[i];
+		refEntity_t ent;
+
+		if(!portal->isInput || portal->targetIndex < 0 || portal->modelHandle <= 0) continue;
+
+		Com_Memset(&ent, 0, sizeof(ent));
+		ent.reType = RT_MODEL;
+		ent.hModel = portal->modelHandle;
+		VectorCopy(portal->origin, ent.origin);
+		VectorCopy(portal->origin, ent.oldorigin);
+		AnglesToAxis(portal->angles, ent.axis);
+		ent.shaderRGBA[0] = 255;
+		ent.shaderRGBA[1] = 255;
+		ent.shaderRGBA[2] = 255;
+		ent.shaderRGBA[3] = 255;
+
+		RE_AddRefEntityToScene(&ent);
+	}
+}
+
+/*
 @@@@@@@@@@@@@@@@@@@@@
 RE_RenderScene
 
@@ -980,6 +1017,10 @@ void RE_RenderScene(const refdef_t* fd) {
 	if(!tr.world && !(fd->rdflags & RDF_NOWORLDMODEL)) {
 		ri.Error(ERR_DROP, "R_RenderScene: NULL worldmodel");
 	}
+
+	// func_portal_in brush models are static map entities managed by the renderer.
+	// Add them before RE_BeginScene snapshots the current scene entity range.
+	if(!(fd->rdflags & RDF_NOWORLDMODEL)) R_AddMapPortalEntities();
 
 	RE_BeginScene(fd);
 
@@ -1126,7 +1167,7 @@ void RE_RenderScene(const refdef_t* fd) {
 	 * Скайбокс рисуется до постобработки и вместе с миром, так что
 	 * bloom/тонемап/sun rays работают как обычно.
 	 */
-	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && !(fd->rdflags & RDF_NOWORLDMODEL)) {
+	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && !(fd->rdflags & RDF_NOWORLDMODEL)) {
 		viewParms_t skyParms = parms;
 
 		/*
@@ -1134,8 +1175,8 @@ void RE_RenderScene(const refdef_t* fd) {
 		 * skyboxOrigin + vieworg / scale — смещение по построению не выходит
 		 * за размеры копии мира.
 		 *
-		 * Но если игрок ФИЗИЧЕСКИ вошёл в коробку скайбокса (func_volume со
-		 * spawnflags 2 — объём вокруг копии мира; func_display whitelist
+		 * Но если игрок ФИЗИЧЕСКИ вошёл в одну из областей коробки скайбокса
+		 * (func_volume со spawnflags 2 — один brush на область; func_display whitelist
 		 * + spawnflags 2 — типичный способ сделать её видимой изнутри), его
 		 * координаты ~ skyboxOrigin: смещение vieworg/scale раздувалось на
 		 * skyboxOrigin/scale, камера вылетала из мини-мира в пустоту, PVS
@@ -1148,7 +1189,7 @@ void RE_RenderScene(const refdef_t* fd) {
 		 * внутри неё камера ставится прямо в точку игрока (1:1): стоя в
 		 * коробке, видишь мини-мир и небо вокруг себя.
 		 */
-		if(tr.world->hasSkyGroupBounds && fd->vieworg[0] >= tr.world->skyGroupBounds[0][0] && fd->vieworg[0] <= tr.world->skyGroupBounds[1][0] && fd->vieworg[1] >= tr.world->skyGroupBounds[0][1] && fd->vieworg[1] <= tr.world->skyGroupBounds[1][1] && fd->vieworg[2] >= tr.world->skyGroupBounds[0][2] && fd->vieworg[2] <= tr.world->skyGroupBounds[1][2]) {
+		if(R_PointInSkyGroupVolume(tr.world, fd->vieworg)) {
 			VectorCopy(fd->vieworg, skyParms.or.origin);
 		} else {
 			VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, fd->vieworg, skyParms.or.origin);

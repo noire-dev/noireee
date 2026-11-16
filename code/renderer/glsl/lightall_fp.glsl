@@ -24,7 +24,8 @@ uniform samplerCube u_CubeMap;
 #if defined(USE_WATER_REFLECTION)
 uniform sampler2D u_WaterReflectMap;     // mirrored view rendered by R_RenderWaterReflection()
 uniform mat4      u_WaterReflectMatrix;  // viewProjection of the mirrored camera (world -> clip)
-uniform vec4      u_WaterReflectInfo;    // x: water plane Z, y: normalmap distortion (world units), z: plane tolerance, w: enabled
+uniform vec4      u_WaterReflectInfo;    // x: reserved, y: normalmap distortion (world units), z: plane tolerance, w: enabled
+uniform vec4      u_WaterReflectPlane;   // xyz: world-space plane normal, w: plane distance
 uniform vec3      u_ViewOrigin;
 #endif
 
@@ -566,14 +567,17 @@ void main()
 		// viewDir = u_ViewOrigin - worldPosition (see lightall_vp.glsl)
 		vec3 waterPos = u_ViewOrigin - viewDir;
 
-		// only fragments that really lie on the reflected plane; anything else (other water level)
-		// keeps the cubemap result
-		float waterMask = 1.0 - smoothstep(u_WaterReflectInfo.z * 0.5, u_WaterReflectInfo.z, abs(waterPos.z - u_WaterReflectInfo.x));
+		// Use the complete plane equation, not world Z: water may be a sloped
+		// or vertical planar surface, including a brush-model face.
+		vec3 waterNormal = normalize(u_WaterReflectPlane.xyz);
+		float planeDistance = dot(waterPos, waterNormal) - u_WaterReflectPlane.w;
+		float waterMask = 1.0 - smoothstep(u_WaterReflectInfo.z * 0.5, u_WaterReflectInfo.z, abs(planeDistance));
 
-		// normalmap perturbation of the normal, moved into the sample position on the plane.
-		// Projection makes near ripples distort more than distant ones, like in a real reflection.
+		// Project normal-map perturbation onto the water plane before offsetting
+		// the projected sample position.
 		vec3 waterDN = N - surfNormal;
-		vec3 waterSamplePos = waterPos + vec3(waterDN.xy, 0.0) * u_WaterReflectInfo.y;
+		waterDN -= waterNormal * dot(waterDN, waterNormal);
+		vec3 waterSamplePos = waterPos + waterDN * u_WaterReflectInfo.y;
 
 		vec4 waterClip = u_WaterReflectMatrix * vec4(waterSamplePos, 1.0);
 		waterMask *= step(0.0001, waterClip.w);

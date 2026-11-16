@@ -151,6 +151,83 @@ void SP_trigger_teleport(gentity_t* self) {
 	trap_LinkEntity(self);
 }
 
+static void portal_touch(gentity_t* self, gentity_t* other, trace_t* trace) {
+	gentity_t* out;
+	vec3_t delta, local, rotated, angles;
+	vec3_t f_s, r_s, u_s, f_d, r_d, u_d;
+
+	if(!other->client) return;
+	if(other->client->ps.pm_type == PM_DEAD) return;
+
+	out = G_Find(NULL, FOFS(targetname), self->target);
+	if(!out) return;
+
+	// Базисы обоих порталов
+	AngleVectors(self->s.angles, f_s, r_s, u_s);
+	AngleVectors(out->s.angles, f_d, r_d, u_d);
+
+	// --- Позиция: world -> local(src) -> world(dst) ---
+	VectorSubtract(other->client->ps.origin, self->r.currentOrigin, delta);
+	local[0] = DotProduct(delta, f_s);
+	local[1] = DotProduct(delta, r_s);
+	local[2] = DotProduct(delta, u_s);
+
+	VectorScale(f_d, local[0], rotated);
+	VectorMA(rotated, local[1], r_d, rotated);
+	VectorMA(rotated, local[2], u_d, rotated);
+	VectorAdd(out->r.currentOrigin, rotated, other->client->ps.origin);
+
+	// --- Смещение выхода (originDiff выходного портала) ---
+	VectorAdd(other->client->ps.origin, self->s.origin2, other->client->ps.origin);
+
+	// --- Скорость: та же ротация ---
+	VectorCopy(other->client->ps.velocity, delta);
+	local[0] = DotProduct(delta, f_s);
+	local[1] = DotProduct(delta, r_s);
+	local[2] = DotProduct(delta, u_s);
+
+	VectorScale(f_d, local[0], rotated);
+	VectorMA(rotated, local[1], r_d, rotated);
+	VectorMA(rotated, local[2], u_d, rotated);
+	VectorCopy(rotated, other->client->ps.velocity);
+
+	// --- Углы обзора: прибавляем РАЗНОСТЬ углов ---
+	VectorCopy(other->client->ps.viewangles, angles);
+	angles[YAW] += out->s.angles[YAW] - self->s.angles[YAW];
+	// angles[PITCH] += out->s.angles[PITCH] - self->s.angles[PITCH];
+	// angles[ROLL]  += out->s.angles[ROLL]  - self->s.angles[ROLL];
+	SetClientViewAngle(other, angles);
+
+	other->client->ps.eFlags ^= EF_TELEPORT_BIT;
+	BG_PlayerStateToEntityState(&other->client->ps, &other->s, true);
+	VectorCopy(other->client->ps.origin, other->r.currentOrigin);
+	trap_LinkEntity(other);
+}
+
+void SP_func_portal_in(gentity_t* self) {
+	vec3_t angleDiff, originDiff;
+
+	G_SpawnVector("angleDiff", "0 0 0", angleDiff);
+	VectorCopy(angleDiff, self->s.angles);
+
+	G_SpawnVector("originDiff", "0 0 0", originDiff);
+	VectorCopy(originDiff, self->s.origin2);
+
+	self->s.eType = ET_PORTAL;
+	self->touch = portal_touch;
+	trap_SetBrushModel(self, self->model);
+	self->r.contents = CONTENTS_TRIGGER;
+	self->r.svFlags = SVF_NOCLIENT;
+	trap_LinkEntity(self);
+}
+
+void SP_func_portal_out(gentity_t* self) {
+	self->r.contents = CONTENTS_TRIGGER;
+	self->touch = NULL;
+	self->r.svFlags |= SVF_NOCLIENT;
+	trap_LinkEntity(self);
+}
+
 /*
 ==============================================================================
 
