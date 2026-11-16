@@ -839,8 +839,8 @@ typedef struct {
  *      func_display whitelist — РИСУЙ ТОЛЬКО поверхности, чьи volumeFlags
  *      входят в белый список (volumeShowFlags), остальное скрывается.
  *
- * Тени: поверхности группы VOLUME_SKY не участвуют в тенях от солнца; в тенях
- * от dlight — только при r_dynamicLightSkybox.
+ * Тени: поверхности группы VOLUME_SKY не участвуют в тенях от солнца и в тенях
+ * от dlight.
  *
  * По умолчанию worldspawn "volumeflags" = VOLUME_SKY — вне display-объёмов
  * копия неба скрыта, виден только сам небесный купол.
@@ -917,7 +917,7 @@ typedef struct {
 	int frameSceneNum;             // copied from tr.frameSceneNum
 	int frameCount;                // copied from tr.frameCount
 	cplane_t portalPlane;          // clip anything behind this if mirroring
-	bool hasWaterReflection;       // planar water reflection (r_reflectionWater) was rendered for this view
+	bool hasWaterReflection;       // planar water reflection (r_planarReflections) was rendered for this view
 	float waterReflectHeight;      // world Z of the reflected water plane
 	float waterReflectMatrix[16];  // viewProjection of the mirrored camera (world -> clip)
 	int viewportX, viewportY, viewportWidth, viewportHeight;
@@ -1217,11 +1217,10 @@ typedef struct msurface_s {
 	bool useCubemap;
 	vec3_t cubemapOrigin;
 	float cubemapBound;
-	bool isWaterPlane;   // SURF_CUBEMAP_WATER surface that lies on a horizontal plane (r_reflectionWater)
+	bool isWaterPlane;   // SURF_CUBEMAP_WATER surface that lies on a horizontal plane (r_planarReflections)
 	float waterHeight;   // world Z of that plane
 	vec3_t waterCenter;  // center of the surface bounds
 	cullinfo_t cullinfo;
-	bool doCull;
 
 	surfaceType_t* data;  // any of srf*_t
 } msurface_t;
@@ -1822,12 +1821,6 @@ extern cvar_t* r_ignore;  // used for debugging anything
 
 extern cvar_t* r_lodbias;  // push/pull LOD transitions
 
-extern cvar_t* r_dynamicLight;
-extern cvar_t* r_dynamicLightSkybox;
-extern cvar_t* r_dynamicLightUpdate;
-extern cvar_t* r_dynamicLightResolution;
-extern cvar_t* r_dynamicLightCull;
-
 extern cvar_t* r_speeds;  // various levels of information display
 
 extern cvar_t* r_gamma;
@@ -1868,25 +1861,23 @@ extern cvar_t* r_autoExposure;
 extern cvar_t* r_autoExposureMin;
 extern cvar_t* r_autoExposureMax;
 
+extern cvar_t* r_deluxeSpecular;
 extern cvar_t* r_parallaxMapping;
 extern cvar_t* r_parallaxMapShadows;
-extern cvar_t* r_reflections;
-extern cvar_t* r_reflectionsResolution;
-extern cvar_t* r_reflectionsGrid;
-extern cvar_t* r_reflectionsMaterials;
-extern cvar_t* r_reflectionsEntities;
-extern cvar_t* r_reflectionWater;            // 1 = SURF_CUBEMAP_WATER surfaces use planar reflections instead of cubemaps
-extern cvar_t* r_reflectionWaterScale;       // size of the reflection texture relative to the screen
-extern cvar_t* r_reflectionWaterDistortion;  // how strongly the normalmap distorts the reflection (world units)
-extern cvar_t* r_reflectionsSkybox;          // 3D skybox (мини-мир) в кубмапах отражений (r_reflections)
-extern cvar_t* r_waterReflectionsSkybox;     // 3D skybox (мини-мир) в планарных отражениях воды (r_reflectionWater)
+
+extern cvar_t* r_cubeReflections;
+extern cvar_t* r_cubeReflectionsResolution;
+extern cvar_t* r_cubeReflectionsGrid;
+extern cvar_t* r_cubeReflectionsMaterials;
+extern cvar_t* r_cubeReflectionsEntities;
+extern cvar_t* r_cubeReflectionsSkybox;
 
 extern cvar_t* r_jiggle;           // enable jiggle bones (hair / cloth)
 extern cvar_t* r_jiggleGravity;    // gravity of the jiggle simulation (z, units/s^2)
 extern cvar_t* r_jiggleStiffness;  // spring stiffness pulling the tip back to the animated pose
 extern cvar_t* r_jiggleDamping;    // velocity damping
 extern cvar_t* r_jiggleMaxSpeed;   // max swing speed of the jiggle tip (units/s, 0 = no cap)
-extern cvar_t* r_deluxeSpecular;
+
 extern cvar_t* r_depthPrepass;
 extern cvar_t* r_shadows;
 extern cvar_t* r_shadowUpdate;
@@ -1902,7 +1893,17 @@ extern cvar_t* r_fogColorB;
 extern cvar_t* r_fogStart;
 extern cvar_t* r_fogEnd;
 
-extern cvar_t* r_3dskybox;
+extern cvar_t* r_3dsky;
+
+extern cvar_t* r_planarReflections;            // 1 = SURF_CUBEMAP_WATER surfaces use planar reflections instead of cubemaps
+extern cvar_t* r_planarReflectionsScale;       // size of the reflection texture relative to the screen
+extern cvar_t* r_planarReflectionsDistortion;  // how strongly the normalmap distorts the reflection (world units)
+extern cvar_t* r_planarReflectionsSkybox;      // 3D skybox (мини-мир) в планарных отражениях воды (r_planarReflections)
+
+extern cvar_t* r_dynamicLight;
+extern cvar_t* r_dynamicLightUpdate;
+extern cvar_t* r_dynamicLightResolution;
+extern cvar_t* r_dynamicLightCull;
 
 /* Procedural sky controls (surfaceparm sky; no skyparms required). */
 extern cvar_t* r_skyTopColor;

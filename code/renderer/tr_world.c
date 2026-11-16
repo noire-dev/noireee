@@ -180,7 +180,7 @@ static bool R_DlightCullSurface(msurface_t* surf, dlightMask_t* dlightBits) {
 	return true;
 }
 
-static void R_FrustumCullSurface(msurface_t* surf) {
+static bool R_FrustumCullSurface(msurface_t* surf) {
 	int frustumCull;
 
 	if(surf->cullinfo.type & CULLINFO_BOX) {
@@ -190,11 +190,9 @@ static void R_FrustumCullSurface(msurface_t* surf) {
 			frustumCull = R_CullBox(surf->cullinfo.bounds);
 
 		if(frustumCull == CULL_OUT) {
-			surf->doCull = true;
-			return;
+			return true;
 		} else {
-			surf->doCull = false;
-			return;
+			return false;
 		}
 	} else if(surf->cullinfo.type & CULLINFO_SPHERE) {
 		if(tr.currentEntityNum != REFENTITYNUM_WORLD)
@@ -203,11 +201,9 @@ static void R_FrustumCullSurface(msurface_t* surf) {
 			frustumCull = R_CullPointAndRadius(surf->cullinfo.localOrigin, surf->cullinfo.radius);
 
 		if(frustumCull == CULL_OUT) {
-			surf->doCull = true;
-			return;
+			return true;
 		} else {
-			surf->doCull = false;
-			return;
+			return false;
 		}
 	}
 }
@@ -242,13 +238,10 @@ static void R_AddWorldSurface(msurface_t* surf, const dlightMask_t* sourceDlight
 	}
 
 	// Правило объёмов: группа VOLUME_SKY (небо и 3D-скайбокс) не участвует в
-	// тенях от солнца (VPF_DEPTHSHADOW ортографические каскады). Динамические
-	// тени от dlight на скайбоксе разрешены — только при r_dynamicLightSkybox.
+	// тенях от солнца (VPF_DEPTHSHADOW ортографические каскады) и в динамических
+	// тенях от dlight.
 	// Проверка после видимости: скрытые поверхности не бросают теней.
-	if((surf->volumeFlags & VOLUME_SKY) && (tr.viewParms.flags & VPF_DEPTHSHADOW)) {
-		if(!(tr.viewParms.flags & VPF_DLIGHTSHADOW)) return;
-		if(!r_dynamicLightSkybox->integer) return;
-	}
+	if((surf->volumeFlags & VOLUME_SKY) && (tr.viewParms.flags & VPF_DEPTHSHADOW)) return;
 
 	// 3D skybox, проход 2: небо уже нарисовано проходом 1 и просвечивает
 	// сквозь просветы SURF_SKY — сами небесные поверхности не рисуем
@@ -262,9 +255,7 @@ static void R_AddWorldSurface(msurface_t* surf, const dlightMask_t* sourceDlight
 	else
 		DlightMask_Clear(&dlightBits);
 
-	R_FrustumCullSurface(surf);
-
-	if(surf->doCull) return;
+	if(R_FrustumCullSurface(surf)) return;
 
 	if(!(tr.viewParms.targetFbo == tr.dlightShadowFbo && (tr.viewParms.flags & VPF_DEPTHSHADOW))) {
 		if(R_CullSurface(surf)) return;

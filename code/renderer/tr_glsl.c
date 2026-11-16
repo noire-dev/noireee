@@ -405,8 +405,8 @@ static void GLSL_GetShaderHeader(GLenum shaderType, const GLchar* extra, char* d
 	fbufHeightScale = 1.0f / ((float)glConfig.vidHeight);
 	Q_strcat(dest, size, va("#ifndef r_FBufScale\n#define r_FBufScale vec2(%f, %f)\n#endif\n", fbufWidthScale, fbufHeightScale));
 
-	if(r_reflections->integer) {
-		int cubeMipSize = r_reflectionsResolution->integer;
+	if(r_cubeReflections->integer) {
+		int cubeMipSize = r_cubeReflectionsResolution->integer;
 		int numRoughnessMips = 0;
 
 		while(cubeMipSize) {
@@ -1017,12 +1017,12 @@ void GLSL_InitGPUShaders(void) {
 
 			// The forward dynamic-light pass uses texture unit 6 for its shadow cubemap.
 			// Do not compile reflection sampling into that pass (same sampler unit).
-			if(r_reflections->integer) {
+			if(r_cubeReflections->integer) {
 				Q_strcat(extradefines, 1024, "#define USE_CUBEMAP\n");
 			}
-			// Planar water reflection (r_reflectionWater). Uses its own texture unit (TB_WATERREFLECT),
+			// Planar water reflection (r_planarReflections). Uses its own texture unit (TB_WATERREFLECT),
 			// so it does not conflict with the shadow cubemap of the forward dlight pass.
-			if(r_reflectionWater->integer && lightType != LIGHTDEF_USE_LIGHT_VECTOR) {
+			if(r_planarReflections->integer && lightType != LIGHTDEF_USE_LIGHT_VECTOR) {
 				Q_strcat(extradefines, 1024, "#define USE_WATER_REFLECTION\n");
 			}
 			if(r_deluxeSpecular->value > 0.000001f) {

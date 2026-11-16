@@ -1049,17 +1049,17 @@ void RE_RenderScene(const refdef_t* fd) {
 			Mat4Copy(tr.lastCascadeSunMvp, tr.refdef.sunShadowMvp[3]);
 		}
 	}
-	if(r_reflections->integer && tr.cubemap) {
+	if(r_cubeReflections->integer && tr.cubemap) {
 		static int current_side = 0;
-		if(r_reflections->integer == 1) {
+		if(r_cubeReflections->integer == 1) {
 			int gX, gY, gZ;
 
-			gX = tr.refdef.vieworg[0] / r_reflectionsGrid->value;
-			gY = tr.refdef.vieworg[1] / r_reflectionsGrid->value;
-			gZ = tr.refdef.vieworg[2] / r_reflectionsGrid->value;
-			tr.cubemap->origin[0] = (r_reflectionsGrid->value * gX) + (r_reflectionsGrid->value * 0.5);
-			tr.cubemap->origin[1] = (r_reflectionsGrid->value * gY) + (r_reflectionsGrid->value * 0.5);
-			tr.cubemap->origin[2] = (r_reflectionsGrid->value * gZ) + (r_reflectionsGrid->value * 0.5);
+			gX = tr.refdef.vieworg[0] / r_cubeReflectionsGrid->value;
+			gY = tr.refdef.vieworg[1] / r_cubeReflectionsGrid->value;
+			gZ = tr.refdef.vieworg[2] / r_cubeReflectionsGrid->value;
+			tr.cubemap->origin[0] = (r_cubeReflectionsGrid->value * gX) + (r_cubeReflectionsGrid->value * 0.5);
+			tr.cubemap->origin[1] = (r_cubeReflectionsGrid->value * gY) + (r_cubeReflectionsGrid->value * 0.5);
+			tr.cubemap->origin[2] = (r_cubeReflectionsGrid->value * gZ) + (r_cubeReflectionsGrid->value * 0.5);
 			if(gX != tr.cubemap->gridX[current_side] || gY != tr.cubemap->gridY[current_side] || gZ != tr.cubemap->gridZ[current_side]) {
 				R_RenderCubemapSide(current_side, true);
 				tr.cubemap->gridX[current_side] = gX;
@@ -1067,17 +1067,17 @@ void RE_RenderScene(const refdef_t* fd) {
 				tr.cubemap->gridZ[current_side] = gZ;
 			}
 			current_side = (current_side + 1) % 6;
-		} else if(r_reflections->integer == 2) {
+		} else if(r_cubeReflections->integer == 2) {
 			if((tr.frameCount & 1) == 0) {
 				VectorCopy(tr.refdef.vieworg, tr.cubemap->origin);
 				R_RenderCubemapSide(current_side, true);
 				current_side = (current_side + 1) % 6;
 			}
-		} else if(r_reflections->integer == 3) {
+		} else if(r_cubeReflections->integer == 3) {
 			VectorCopy(tr.refdef.vieworg, tr.cubemap->origin);
 			R_RenderCubemapSide(current_side, true);
 			current_side = (current_side + 1) % 6;
-		} else if(r_reflections->integer == 4) {
+		} else if(r_cubeReflections->integer == 4) {
 			VectorCopy(tr.refdef.vieworg, tr.cubemap->origin);
 			for(int i = 0; i < 6; i++) R_RenderCubemapSide(i, true);
 		}
@@ -1140,7 +1140,7 @@ void RE_RenderScene(const refdef_t* fd) {
 	 * Скайбокс рисуется до постобработки и вместе с миром, так что
 	 * bloom/тонемап/sun rays работают как обычно.
 	 */
-	if(tr.world && tr.world->hasSkybox && r_3dskybox->integer && !(fd->rdflags & RDF_NOWORLDMODEL)) {
+	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && !(fd->rdflags & RDF_NOWORLDMODEL)) {
 		viewParms_t skyParms = parms;
 
 		/*

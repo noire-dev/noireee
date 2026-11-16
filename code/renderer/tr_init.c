@@ -43,12 +43,6 @@ cvar_t* com_altivec;
 
 cvar_t* r_ignore;
 
-cvar_t* r_dynamicLight;
-cvar_t* r_dynamicLightSkybox;
-cvar_t* r_dynamicLightUpdate;
-cvar_t* r_dynamicLightResolution;
-cvar_t* r_dynamicLightCull;
-
 cvar_t* r_lodbias;
 
 cvar_t* r_speeds;
@@ -80,25 +74,23 @@ cvar_t* r_autoExposure;
 cvar_t* r_autoExposureMin;
 cvar_t* r_autoExposureMax;
 
+cvar_t* r_deluxeSpecular;
 cvar_t* r_parallaxMapping;
 cvar_t* r_parallaxMapShadows;
-cvar_t* r_reflections;
-cvar_t* r_reflectionsResolution;
-cvar_t* r_reflectionsGrid;
+
+cvar_t* r_cubeReflections;
+cvar_t* r_cubeReflectionsResolution;
+cvar_t* r_cubeReflectionsGrid;
+cvar_t* r_cubeReflectionsMaterials;
+cvar_t* r_cubeReflectionsEntities;
+cvar_t* r_cubeReflectionsSkybox;
 
 cvar_t* r_jiggle;
 cvar_t* r_jiggleGravity;
 cvar_t* r_jiggleStiffness;
 cvar_t* r_jiggleDamping;
 cvar_t* r_jiggleMaxSpeed;
-cvar_t* r_reflectionsMaterials;
-cvar_t* r_reflectionsEntities;
-cvar_t* r_reflectionsSkybox;
-cvar_t* r_waterReflectionsSkybox;
-cvar_t* r_reflectionWater;
-cvar_t* r_reflectionWaterScale;
-cvar_t* r_reflectionWaterDistortion;
-cvar_t* r_deluxeSpecular;
+
 cvar_t* r_depthPrepass;
 cvar_t* r_shadows;
 cvar_t* r_shadowUpdate;
@@ -113,7 +105,18 @@ cvar_t* r_fogColorG;
 cvar_t* r_fogColorB;
 cvar_t* r_fogStart;
 cvar_t* r_fogEnd;
-cvar_t* r_3dskybox;
+
+cvar_t* r_3dsky;
+
+cvar_t* r_planarReflections;
+cvar_t* r_planarReflectionsScale;
+cvar_t* r_planarReflectionsDistortion;
+cvar_t* r_planarReflectionsSkybox;
+
+cvar_t* r_dynamicLight;
+cvar_t* r_dynamicLightUpdate;
+cvar_t* r_dynamicLightResolution;
+cvar_t* r_dynamicLightCull;
 
 cvar_t* r_skyTopColor;
 cvar_t* r_skyBottomColor;
@@ -224,15 +227,15 @@ static void InitOpenGL(void) {
 	}
 
 	// check for GLSL function textureCubeLod()
-	if(r_reflections->integer && !QGL_VERSION_ATLEAST(3, 0)) {
-		ri.Printf(PRINT_WARNING, "WARNING: Disabled r_reflections because it requires OpenGL 3.0\n");
-		ri.Cvar_Set("r_reflections", "0");
+	if(r_cubeReflections->integer && !QGL_VERSION_ATLEAST(3, 0)) {
+		ri.Printf(PRINT_WARNING, "WARNING: Disabled r_cubeReflections because it requires OpenGL 3.0\n");
+		ri.Cvar_Set("r_cubeReflections", "0");
 	}
 
 	// planar water reflections need textureLod() (GL 3.0) and an FBO to render the mirrored view into
-	if(r_reflectionWater->integer && (!QGL_VERSION_ATLEAST(3, 0) || !glRefConfig.framebufferObject)) {
-		ri.Printf(PRINT_WARNING, "WARNING: Disabled r_reflectionWater because it requires OpenGL 3.0 and framebuffer objects\n");
-		ri.Cvar_Set("r_reflectionWater", "0");
+	if(r_planarReflections->integer && (!QGL_VERSION_ATLEAST(3, 0) || !glRefConfig.framebufferObject)) {
+		ri.Printf(PRINT_WARNING, "WARNING: Disabled r_planarReflections because it requires OpenGL 3.0 and framebuffer objects\n");
+		ri.Cvar_Set("r_planarReflections", "0");
 	}
 
 	// set default state
@@ -887,27 +890,22 @@ void R_Register(void) {
 	r_autoExposureMin = ri.Cvar_Get("r_autoExposureMin", "-2.0", CVAR_CHEAT);
 	r_autoExposureMax = ri.Cvar_Get("r_autoExposureMax", "2.00", CVAR_CHEAT);
 
+	r_deluxeSpecular = ri.Cvar_Get("r_deluxeSpecular", "0.25", CVAR_ARCHIVE | CVAR_LATCH);
 	r_parallaxMapping = ri.Cvar_Get("r_parallaxMapping", "0", CVAR_ARCHIVE | CVAR_LATCH);
 	r_parallaxMapShadows = ri.Cvar_Get("r_parallaxMapShadows", "0", CVAR_ARCHIVE | CVAR_LATCH);
 
-	r_reflections = ri.Cvar_Get("r_reflections", "2", CVAR_ARCHIVE | CVAR_LATCH);
-	r_reflectionsResolution = ri.Cvar_Get("r_reflectionsResolution", "512", CVAR_ARCHIVE | CVAR_LATCH);
-	r_reflectionsGrid = ri.Cvar_Get("r_reflectionsGrid", "64", CVAR_ARCHIVE | CVAR_LATCH);
-	r_reflectionsMaterials = ri.Cvar_Get("r_reflectionsMaterials", "1", CVAR_ARCHIVE | CVAR_LATCH);
-	r_reflectionsEntities = ri.Cvar_Get("r_reflectionsEntities", "1", CVAR_ARCHIVE | CVAR_LATCH);
-	r_reflectionsSkybox = ri.Cvar_Get("r_reflectionsSkybox", "0", CVAR_ARCHIVE);
-	r_waterReflectionsSkybox = ri.Cvar_Get("r_waterReflectionsSkybox", "1", CVAR_ARCHIVE);
-	r_reflectionWater = ri.Cvar_Get("r_reflectionWater", "1", CVAR_ARCHIVE | CVAR_LATCH);
-	r_reflectionWaterScale = ri.Cvar_Get("r_reflectionWaterScale", "1.00", CVAR_ARCHIVE | CVAR_LATCH);
-	r_reflectionWaterDistortion = ri.Cvar_Get("r_reflectionWaterDistortion", "1024", CVAR_ARCHIVE);
+	r_cubeReflections = ri.Cvar_Get("r_cubeReflections", "2", CVAR_ARCHIVE | CVAR_LATCH);
+	r_cubeReflectionsResolution = ri.Cvar_Get("r_cubeReflectionsResolution", "32", CVAR_ARCHIVE | CVAR_LATCH);
+	r_cubeReflectionsGrid = ri.Cvar_Get("r_cubeReflectionsGrid", "64", CVAR_ARCHIVE | CVAR_LATCH);
+	r_cubeReflectionsMaterials = ri.Cvar_Get("r_cubeReflectionsMaterials", "1", CVAR_ARCHIVE | CVAR_LATCH);
+	r_cubeReflectionsEntities = ri.Cvar_Get("r_cubeReflectionsEntities", "1", CVAR_ARCHIVE | CVAR_LATCH);
+	r_cubeReflectionsSkybox = ri.Cvar_Get("r_cubeReflectionsSkybox", "0", CVAR_ARCHIVE);
 
 	r_jiggle = ri.Cvar_Get("r_jiggle", "1", CVAR_ARCHIVE);
 	r_jiggleGravity = ri.Cvar_Get("r_jiggleGravity", "-800", CVAR_ARCHIVE);
 	r_jiggleStiffness = ri.Cvar_Get("r_jiggleStiffness", "192", CVAR_ARCHIVE);
 	r_jiggleDamping = ri.Cvar_Get("r_jiggleDamping", "38", CVAR_ARCHIVE);
 	r_jiggleMaxSpeed = ri.Cvar_Get("r_jiggleMaxSpeed", "64", CVAR_ARCHIVE);
-
-	r_deluxeSpecular = ri.Cvar_Get("r_deluxeSpecular", "0.25", CVAR_ARCHIVE | CVAR_LATCH);
 
 	r_depthPrepass = ri.Cvar_Get("r_depthPrepass", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_shadows = ri.Cvar_Get("r_shadows", "1", CVAR_ARCHIVE | CVAR_LATCH);
@@ -924,7 +922,17 @@ void R_Register(void) {
 	r_fogStart = ri.Cvar_Get("r_fogStart", "4096", CVAR_ARCHIVE);
 	r_fogEnd = ri.Cvar_Get("r_fogEnd", "500000", CVAR_ARCHIVE);
 
-	r_3dskybox = ri.Cvar_Get("r_3dskybox", "1", CVAR_ARCHIVE);
+	r_3dsky = ri.Cvar_Get("r_3dsky", "1", CVAR_ARCHIVE);
+
+	r_planarReflections = ri.Cvar_Get("r_planarReflections", "1", CVAR_ARCHIVE | CVAR_LATCH);
+	r_planarReflectionsScale = ri.Cvar_Get("r_planarReflectionsScale", "1.00", CVAR_ARCHIVE | CVAR_LATCH);
+	r_planarReflectionsDistortion = ri.Cvar_Get("r_planarReflectionsDistortion", "1024", CVAR_ARCHIVE);
+	r_planarReflectionsSkybox = ri.Cvar_Get("r_planarReflectionsSkybox", "1", CVAR_ARCHIVE);
+
+	r_dynamicLight = ri.Cvar_Get("r_dynamicLight", "2", CVAR_ARCHIVE | CVAR_LATCH);
+	r_dynamicLightUpdate = ri.Cvar_Get("r_dynamicLightUpdate", "1", CVAR_ARCHIVE);
+	r_dynamicLightCull = ri.Cvar_Get("r_dynamicLightCull", "1", CVAR_ARCHIVE);
+	r_dynamicLightResolution = ri.Cvar_Get("r_dynamicLightResolution", "128", CVAR_ARCHIVE | CVAR_LATCH);
 
 	// Procedural sky. RGB values are floating point, normally in the 0..1 range.
 	r_skyTopColor = ri.Cvar_Get("r_skyTopColor", "1.00 1.00 1.00", CVAR_ARCHIVE);
@@ -958,15 +966,9 @@ void R_Register(void) {
 	r_cameraBlurNearThreshold = ri.Cvar_Get("r_cameraBlurNearThreshold", "0.25", CVAR_ARCHIVE);
 	r_cameraBlurNearSoftness = ri.Cvar_Get("r_cameraBlurNearSoftness", "0.08", CVAR_ARCHIVE);
 
-	//
 	// archived variables that can change at any time
-	//
 	r_lodbias = ri.Cvar_Get("r_lodbias", "0", CVAR_ARCHIVE);
-	r_dynamicLight = ri.Cvar_Get("r_dynamicLight", "2", CVAR_ARCHIVE | CVAR_LATCH);
-	r_dynamicLightSkybox = ri.Cvar_Get("r_dynamicLightSkybox", "0", CVAR_ARCHIVE);
-	r_dynamicLightUpdate = ri.Cvar_Get("r_dynamicLightUpdate", "1", CVAR_ARCHIVE);
-	r_dynamicLightCull = ri.Cvar_Get("r_dynamicLightCull", "1", CVAR_ARCHIVE);
-	r_dynamicLightResolution = ri.Cvar_Get("r_dynamicLightResolution", "128", CVAR_ARCHIVE | CVAR_LATCH);
+
 	r_textureMode = ri.Cvar_Get("r_textureMode", "GL_LINEAR_MIPMAP_LINEAR", CVAR_ARCHIVE);
 	r_swapInterval = ri.Cvar_Get("r_swapInterval", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_gamma = ri.Cvar_Get("r_gamma", "1", CVAR_ARCHIVE);

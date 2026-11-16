@@ -1612,7 +1612,7 @@ void R_AddIQMSurfaces(trRefEntity_t* ent) {
 			drawSurf = surface;
 		}
 
-		if(r_reflectionsEntities->integer) useCubemap = R_ShaderRequiresCubemap(shader);
+		if(r_cubeReflectionsEntities->integer) useCubemap = R_ShaderRequiresCubemap(shader);
 
 		if(!personalModel) {
 			R_AddDrawSurf(drawSurf, shader, fogNum, DlightMask_Any(&ent->needDlights), useCubemap, vec3_origin, 0.0f);

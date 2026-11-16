@@ -1469,14 +1469,14 @@ void R_CreateBuiltinImages(void) {
 			tr.screenShadowImage = R_CreateImage("*screenShadow", NULL, width, height, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_RGBA8);
 		}
 
-		if(r_reflections->integer) {
-			tr.renderCubeImage = R_CreateImage("*renderCube", NULL, r_reflectionsResolution->integer, r_reflectionsResolution->integer, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE | IMGFLAG_MIPMAP | IMGFLAG_CUBEMAP, rgbFormat);
+		if(r_cubeReflections->integer) {
+			tr.renderCubeImage = R_CreateImage("*renderCube", NULL, r_cubeReflectionsResolution->integer, r_cubeReflectionsResolution->integer, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE | IMGFLAG_MIPMAP | IMGFLAG_CUBEMAP, rgbFormat);
 		}
 
 		// planar water reflection target. Power-of-two size because the image is mipmapped
 		// (roughness blur) and mipmapped images are padded to power-of-two storage.
-		if(r_reflectionWater->integer) {
-			float reflScale = Com_Clamp(0.1f, 1.0f, r_reflectionWaterScale->value);
+		if(r_planarReflections->integer) {
+			float reflScale = Com_Clamp(0.1f, 1.0f, r_planarReflectionsScale->value);
 			int targetW = MAX(16, (int)(width * reflScale));
 			int targetH = MAX(16, (int)(height * reflScale));
 			int reflW = 16, reflH = 16;

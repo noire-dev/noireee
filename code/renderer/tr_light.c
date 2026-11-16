@@ -426,6 +426,6 @@ int R_LightDirForPoint(vec3_t point, vec3_t lightDir, vec3_t normal, world_t* wo
 }
 
 bool R_CubemapForShader(bool applyCubemap) {
-	if(r_reflections->integer && applyCubemap) return true;
+	if(r_cubeReflections->integer && applyCubemap) return true;
 	return false;
 }

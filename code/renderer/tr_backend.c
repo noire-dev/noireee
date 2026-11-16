@@ -906,7 +906,7 @@ const void* RB_DrawSurfs(const void* data) {
 	}
 
 	{
-		bool skyboxActive = tr.world && tr.world->hasSkybox && r_3dskybox->integer && !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL);
+		bool skyboxActive = tr.world && tr.world->hasSkybox && r_3dsky->integer && !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL);
 		bool occlusionPass = skyboxActive ? (backEnd.viewParms.flags & VPF_SKYDRAWN) != 0 : !(backEnd.viewParms.flags & VPF_SKYBOX3D);
 
 		if(glRefConfig.framebufferObject && r_sunRays->integer && occlusionPass) {
@@ -947,7 +947,7 @@ const void* RB_DrawSurfs(const void* data) {
 	}
 
 	// FIXME? backEnd.viewParms doesn't get properly initialized for 2D drawing.
-	// r_reflections 1 generates cubemaps with R_RenderCubemapSide()
+	// r_cubeReflections 1 generates cubemaps with R_RenderCubemapSide()
 	// and sets isMirror = true. Clear it here to prevent it from leaking
 	// to 2D drawing and causing the loading screen to be culled.
 	backEnd.viewParms.isMirror = false;

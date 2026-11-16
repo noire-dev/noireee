@@ -1481,7 +1481,7 @@ void R_DebugPolygon(int color, int numPoints, float* points) {
 R_NoteWaterSurface
 
 Called for every visible world surface that lies on a horizontal water plane
-(r_reflectionWater). Remembers the nearest one; R_RenderView() then renders
+(r_planarReflections). Remembers the nearest one; R_RenderView() then renders
 the mirrored view of exactly that plane, once per frame.
 =================
 */
@@ -1490,7 +1490,7 @@ void R_NoteWaterSurface(const msurface_t* surf) {
 	float distSq = 0.0f;
 	int i;
 
-	if(!r_reflectionWater->integer || !tr.waterReflectionFbo) return;
+	if(!r_planarReflections->integer || !tr.waterReflectionFbo) return;
 
 	// only the real camera view; never inside the cubemap / shadow / mirror / reflection views
 	if(tr.viewParms.isPortal || (tr.viewParms.flags & (VPF_CUBEMAP | VPF_WATERREFLECTION | VPF_SHADOWMAPS | VPF_DEPTHSHADOW | VPF_DLIGHTSHADOW)) || (tr.refdef.rdflags & RDF_NOWORLDMODEL)) return;
@@ -1584,11 +1584,7 @@ void R_RenderWaterReflection(void) {
 	newParms.targetFbo = tr.waterReflectionFbo;
 	newParms.targetFboLayer = 0;
 
-	// 3D skybox в отражении: тот же двухпроходный приём, что и в основном виде,
-	// но камера прохода 1 считается от зеркальной позиции игрока.
-	// Видимость скайбокса в планарных отражениях воды управляется
-	// r_waterReflectionsSkybox.
-	if(tr.world && tr.world->hasSkybox && r_3dskybox->integer && r_waterReflectionsSkybox->integer) {
+	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && r_planarReflectionsSkybox->integer) {
 		viewParms_t skyParms = newParms;
 
 		VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, newParms.or.origin, skyParms.or.origin);
@@ -1694,8 +1690,8 @@ void R_RenderView(viewParms_t* parms) {
 		numDrawSurfs = MAX_DRAWSURFS;
 	}
 
-	// planar water reflection (r_reflectionWater): the mirrored view has to be queued before this view
-	if(tr.waterFound && r_reflectionWater->integer && tr.waterReflectionFbo) R_RenderWaterReflection();
+	// planar water reflection (r_planarReflections): the mirrored view has to be queued before this view
+	if(tr.waterFound && r_planarReflections->integer && tr.waterReflectionFbo) R_RenderWaterReflection();
 
 	R_SortDrawSurfs(tr.refdef.drawSurfs + firstDrawSurf, numDrawSurfs - firstDrawSurf);
 }
@@ -2210,8 +2206,8 @@ void R_RenderCubemapSide(int cubemapSide, bool subscene) {
 
 	// 3D skybox в кубмапах отражений: тот же двухпроходный приём, что и в
 	// основном виде, — сначала небо и мини-мир камерой скайбокса, поверх —
-	// геометрия основного мира. Управляется r_reflectionsSkybox.
-	if(tr.world && tr.world->hasSkybox && r_3dskybox->integer && r_reflectionsSkybox->integer) {
+	// геометрия основного мира. Управляется r_cubeReflectionsSkybox.
+	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && r_cubeReflectionsSkybox->integer) {
 		viewParms_t skyParms = parms;
 
 		VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, parms.or.origin, skyParms.or.origin);

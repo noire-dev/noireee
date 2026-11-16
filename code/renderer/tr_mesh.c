@@ -320,7 +320,7 @@ void R_AddMD3Surfaces(trRefEntity_t* ent) {
 			drawSurf = surface;
 		}
 
-		if(r_reflectionsEntities->integer) useCubemap = R_ShaderRequiresCubemap(shader);
+		if(r_cubeReflectionsEntities->integer) useCubemap = R_ShaderRequiresCubemap(shader);
 
 		// don't add third_person objects if not viewing through a portal
 		if(!personalModel) {

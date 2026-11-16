@@ -2313,7 +2313,7 @@ void R_AssignCubemapsToWorldSurfaces(void) {
 		bool cubemapCorrection = surf->shader->surfaceFlags & SURF_CUBEMAP_WATER;
 
 		if((surf->cullinfo.type & CULLINFO_SPHERE) || (surf->cullinfo.type & CULLINFO_BOX)) {
-			surf->useCubemap = R_CubemapForShader(r_reflectionsMaterials->integer || surf->shader->surfaceFlags & SURF_CUBEMAP_WATER);
+			surf->useCubemap = R_CubemapForShader(r_cubeReflectionsMaterials->integer || surf->shader->surfaceFlags & SURF_CUBEMAP_WATER);
 
 			if(surf->cullinfo.type & CULLINFO_BOX) {
 				vec3_t size;
@@ -2337,7 +2337,7 @@ void R_AssignCubemapsToWorldSurfaces(void) {
 =================
 R_AssignWaterPlanesToWorldSurfaces
 
-Finds the SURF_CUBEMAP_WATER surfaces that can use a planar reflection (r_reflectionWater):
+Finds the SURF_CUBEMAP_WATER surfaces that can use a planar reflection (r_planarReflections):
 flat, horizontal and facing up. Everything else keeps using the cubemap.
 =================
 */
@@ -2386,7 +2386,7 @@ void R_RenderMissingCubemaps(void) {
 	imgFlags_t flags = IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE | IMGFLAG_MIPMAP | IMGFLAG_NOLIGHTSCALE | IMGFLAG_CUBEMAP;
 
 	if(!tr.cubemap->image) {
-		tr.cubemap->image = R_CreateImage("*cubeMap", NULL, r_reflectionsResolution->integer, r_reflectionsResolution->integer, IMGTYPE_COLORALPHA, flags, GL_RGBA8);
+		tr.cubemap->image = R_CreateImage("*cubeMap", NULL, r_cubeReflectionsResolution->integer, r_cubeReflectionsResolution->integer, IMGTYPE_COLORALPHA, flags, GL_RGBA8);
 
 		for(i = 0; i < 6; i++) {
 			RE_ClearScene();
@@ -2680,13 +2680,13 @@ void RE_LoadWorldMap(const char* name) {
 	}
 
 	// load cubemaps
-	if(r_reflections->integer) {
+	if(r_cubeReflections->integer) {
 		R_CreateBaseCubemap();
 		R_AssignCubemapsToWorldSurfaces();
 	}
 
 	// planar water reflections (independent of the cubemaps)
-	if(r_reflectionWater->integer) R_AssignWaterPlanesToWorldSurfaces();
+	if(r_planarReflections->integer) R_AssignWaterPlanesToWorldSurfaces();
 
 	s_worldData.dataSize = (byte*)ri.Hunk_Alloc(0, h_low) - startMarker;
 
@@ -2697,7 +2697,7 @@ void RE_LoadWorldMap(const char* name) {
 	R_BindNullVao();
 
 	// Render all cubemaps
-	if(r_reflections->integer && glRefConfig.framebufferObject) R_RenderMissingCubemaps();
+	if(r_cubeReflections->integer && glRefConfig.framebufferObject) R_RenderMissingCubemaps();
 
 	ri.FS_FreeFile(buffer.v);
 }
