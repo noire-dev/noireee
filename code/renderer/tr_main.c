@@ -1318,7 +1318,7 @@ void R_SortDrawSurfs(drawSurf_t* drawSurfs, int numDrawSurfs) {
 	R_RadixSort(drawSurfs, numDrawSurfs);
 
 	// skip pass through drawing if rendering a shadow map
-	if(tr.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW)) {
+	if(tr.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW)) {
 		R_AddDrawSurfCmd(drawSurfs, numDrawSurfs);
 		return;
 	}
@@ -1368,7 +1368,7 @@ static void R_AddEntitySurface(int entityNum) {
 		return;
 	}
 
-	if((ent->e.renderfx & RF_NO_REFLECT) && (tr.viewParms.flags & VPF_NOCUBEMAPS)) {
+	if((ent->e.renderfx & RF_NO_REFLECT) && (tr.viewParms.flags & VPF_CUBEMAP)) {
 		return;
 	}
 
@@ -1431,12 +1431,10 @@ R_GenerateDrawSurfs
 void R_GenerateDrawSurfs(void) {
 	R_AddWorldSurfaces();
 
-	if(!(tr.viewParms.flags & VPF_NOCUBEMAPS)) R_AddPolygonSurfaces();
+	if(!(tr.viewParms.flags & VPF_CUBEMAP)) R_AddPolygonSurfaces();
 
 	// dynamically compute far clip plane distance
-	if(!(tr.viewParms.flags & VPF_SHADOWMAP)) {
-		R_SetFarClip();
-	}
+	if(!(tr.viewParms.flags & VPF_SHADOWMAPS)) R_SetFarClip();
 
 	// we know the size of the clipping volume. Now set the rest of the projection matrix.
 	R_SetupProjectionZ(&tr.viewParms);
@@ -1495,7 +1493,7 @@ void R_NoteWaterSurface(const msurface_t* surf) {
 	if(!r_reflectionWater->integer || !tr.waterReflectionFbo) return;
 
 	// only the real camera view; never inside the cubemap / shadow / mirror / reflection views
-	if(tr.viewParms.isPortal || (tr.viewParms.flags & (VPF_NOCUBEMAPS | VPF_WATERREFLECT | VPF_SHADOWMAP | VPF_DEPTHSHADOW | VPF_DLIGHTSHADOW)) || (tr.refdef.rdflags & RDF_NOWORLDMODEL)) return;
+	if(tr.viewParms.isPortal || (tr.viewParms.flags & (VPF_CUBEMAP | VPF_WATERREFLECTION | VPF_SHADOWMAPS | VPF_DEPTHSHADOW | VPF_DLIGHTSHADOW)) || (tr.refdef.rdflags & RDF_NOWORLDMODEL)) return;
 
 	// surface bounds are world space only for the world model itself
 	if(tr.currentEntityNum != REFENTITYNUM_WORLD) return;
@@ -1559,8 +1557,11 @@ void R_RenderWaterReflection(void) {
 	newParms.isPortal = true;  // oblique near plane clipping at portalPlane, own player is visible
 	newParms.isMirror = true;  // invert face culling
 	newParms.zFar = 0.0f;
-	newParms.flags &= ~(VPF_FARPLANEFRUSTUM | VPF_USESUNLIGHT);
-	newParms.flags |= VPF_NOVIEWMODEL | VPF_WATERREFLECT;
+	// VPF_SKYDRAWN здесь НЕ наследуется: это маркер "проход 2 уже отрисовал скайбокс",
+	// а у отражения свой двухпроходный цикл — проход 1 (VPF_SKYBOX3D) обязан нарисовать
+	// небо заново, и только затем проход 2 получает VPF_SKYDRAWN (см. ниже)
+	newParms.flags &= ~(VPF_FARPLANEFRUSTUM | VPF_USESUNLIGHT | VPF_SKYDRAWN);
+	newParms.flags |= VPF_NOVIEWMODEL | VPF_WATERREFLECTION;
 	newParms.hasWaterReflection = false;
 
 	R_MirrorPoint(oldParms.or.origin, &surface, &camera, newParms.or.origin);
@@ -1583,6 +1584,28 @@ void R_RenderWaterReflection(void) {
 	newParms.targetFbo = tr.waterReflectionFbo;
 	newParms.targetFboLayer = 0;
 
+	// 3D skybox в отражении: тот же двухпроходный приём, что и в основном виде,
+	// но камера прохода 1 считается от зеркальной позиции игрока.
+	// Видимость скайбокса в планарных отражениях воды управляется
+	// r_waterReflectionsSkybox.
+	if(tr.world && tr.world->hasSkybox && r_3dskybox->integer && r_waterReflectionsSkybox->integer) {
+		viewParms_t skyParms = newParms;
+
+		VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, newParms.or.origin, skyParms.or.origin);
+		VectorCopy(skyParms.or.origin, skyParms.pvsOrigin);
+		skyParms.flags = newParms.flags | VPF_SKYBOX3D;
+
+		// oblique-клип по плоскости воды к мини-миру не относится: камера скайбокса
+		// живёт в другом месте карты, и плоскость воды главного мира обрезала бы
+		// его геометрию (или весь мини-мир целиком). isMirror остаётся — оси
+		// камеры зеркальные, компенсация winding нужна.
+		skyParms.isPortal = false;
+
+		R_RenderView(&skyParms);
+
+		newParms.flags |= VPF_SKYDRAWN | VPF_KEEPCOLOR;
+	}
+
 	R_RenderView(&newParms);
 
 	// tr.viewParms is now the mirrored view. The oblique near plane only changes the z row of the
@@ -1593,6 +1616,37 @@ void R_RenderWaterReflection(void) {
 	tr.viewParms.hasWaterReflection = true;
 	tr.viewParms.waterReflectHeight = height;
 	Mat4Copy(viewProj, tr.viewParms.waterReflectMatrix);
+}
+
+/*
+================
+R_SetupVolumeRules
+
+Правила видимости объёмов для ОДНОЙ камеры (применяет R_AddWorldSurface).
+
+По умолчанию каждая камера получает правила сцены из RE_BeginScene:
+  - вне func_display — worldspawn "volumeflags" (blacklist; по умолчанию
+    VOLUME_SKY — мир не рисует поверхности 3D-скайбокса);
+  - внутри func_display — его spawnflags (blacklist) или whitelist.
+
+Единственное исключение — проход 3D-скайбокса (VPF_SKYBOX3D): он рендерится
+СТРОГО с volumeFlags = ~VOLUME_SKY, т.е. 1111 1111 1111 1111
+1111 1111 1111 1101 (0xFFFFFFFD) — рисует ТОЛЬКО поверхности группы неба
+(мини-мир + купол) и ничего, кроме неё. worldspawn / func_display на этот
+проход не влияют.
+================
+*/
+static void R_SetupVolumeRules(viewParms_t* parms) {
+	parms->volumeFlags = tr.volumeFlags;
+	parms->volumeShowOnly = tr.volumeShowOnly;
+	parms->volumeShowFlags = tr.volumeShowFlags;
+
+	if(parms->flags & VPF_SKYBOX3D) {
+		// 3D-скайбокс: СТРОГО только группа неба (~VOLUME_SKY = 0xFFFFFFFD)
+		parms->volumeFlags = ~VOLUME_SKY;
+		parms->volumeShowOnly = false;
+		parms->volumeShowFlags = 0;
+	}
 }
 
 /*
@@ -1616,6 +1670,7 @@ void R_RenderView(viewParms_t* parms) {
 	tr.viewParms = *parms;
 	tr.viewParms.frameSceneNum = tr.frameSceneNum;
 	tr.viewParms.frameCount = tr.frameCount;
+	R_SetupVolumeRules(&tr.viewParms);
 
 	firstDrawSurf = tr.refdef.numDrawSurfs;
 
@@ -1660,7 +1715,7 @@ static void R_RenderOneDlightCubemap(const refdef_t* fd, int lightIndex, int fac
 	shadowParms.fovX = 90;
 	shadowParms.fovY = 90;
 	shadowParms.targetFbo = tr.dlightShadowFbo;
-	shadowParms.flags = VPF_SHADOWMAP | VPF_DEPTHSHADOW | VPF_DLIGHTSHADOW | VPF_NOVIEWMODEL;
+	shadowParms.flags = VPF_SHADOWMAPS | VPF_DEPTHSHADOW | VPF_DLIGHTSHADOW | VPF_NOVIEWMODEL;
 	shadowParms.zFar = tr.refdef.dlights[lightIndex].radius;
 	VectorCopy(tr.refdef.dlights[lightIndex].origin, shadowParms.or.origin);
 	VectorCopy(tr.refdef.dlights[lightIndex].origin, shadowParms.pvsOrigin);
@@ -2047,6 +2102,8 @@ void R_RenderSunShadowMaps(const refdef_t* fd, int level) {
 			tr.viewParms = shadowParms;
 			tr.viewParms.frameSceneNum = tr.frameSceneNum;
 			tr.viewParms.frameCount = tr.frameCount;
+			// каскады солнца идут мимо R_RenderView — правила объёмов ставим явно
+			R_SetupVolumeRules(&tr.viewParms);
 
 			firstDrawSurf = tr.refdef.numDrawSurfs;
 
@@ -2136,7 +2193,7 @@ void R_RenderCubemapSide(int cubemapSide, bool subscene) {
 	parms.viewportHeight = tr.renderCubeFbo->height;
 	parms.isPortal = false;
 	parms.isMirror = true;
-	parms.flags = VPF_NOVIEWMODEL | VPF_NOCUBEMAPS;
+	parms.flags = VPF_NOVIEWMODEL | VPF_CUBEMAP;
 
 	parms.fovX = 90;
 	parms.fovY = 90;
@@ -2150,6 +2207,22 @@ void R_RenderCubemapSide(int cubemapSide, bool subscene) {
 
 	parms.targetFbo = tr.renderCubeFbo;
 	parms.targetFboLayer = cubemapSide;
+
+	// 3D skybox в кубмапах отражений: тот же двухпроходный приём, что и в
+	// основном виде, — сначала небо и мини-мир камерой скайбокса, поверх —
+	// геометрия основного мира. Управляется r_reflectionsSkybox.
+	if(tr.world && tr.world->hasSkybox && r_3dskybox->integer && r_reflectionsSkybox->integer) {
+		viewParms_t skyParms = parms;
+
+		VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, parms.or.origin, skyParms.or.origin);
+		VectorCopy(skyParms.or.origin, skyParms.pvsOrigin);
+		skyParms.flags = parms.flags | VPF_SKYBOX3D;
+
+		R_RenderView(&skyParms);
+
+		// второй проход рисуется поверх первого: цветовой буфер (небо и мини-мир) не очищается, глубина очищается как обычно
+		parms.flags |= VPF_SKYDRAWN | VPF_KEEPCOLOR;
+	}
 
 	R_RenderView(&parms);
 

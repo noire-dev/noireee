@@ -816,7 +816,92 @@ typedef struct {
 	float surface[4];
 } fog_t;
 
-typedef enum { VPF_NONE = 0x00, VPF_NOVIEWMODEL = 0x01, VPF_SHADOWMAP = 0x02, VPF_DEPTHSHADOW = 0x04, VPF_DEPTHCLAMP = 0x08, VPF_DLIGHTSHADOW = 0x10, VPF_ORTHOGRAPHIC = 0x20, VPF_USESUNLIGHT = 0x40, VPF_FARPLANEFRUSTUM = 0x80, VPF_NOCUBEMAPS = 0x100, VPF_WATERREFLECT = 0x200 } viewParmFlags_t;
+/*
+ * Группы объёмов видимости (func_volume / func_display / worldspawn "volumeflags").
+ *
+ * VOLUME_WORLD — обычная геометрия мира (базовая группа всех поверхностей, включая brush-энтити).
+ * VOLUME_SKY  — небо и 3D-скайбокс. Чёткое правило: КОПИЯ неба (мини-мир
+ *               3D-скайбокса) помечается func_volume со spawnflags 2.
+ *               Сам небесный купол (isSky, "портальное небо")
+ *               объёмами не скрывается никогда — это фон кадра.
+ * Биты 4, 8, 16, ... — кастомные группы (func_volume spawnflags).
+ *
+ * Правила видимости (R_AddWorldSurface), для всех поверхностей кроме небесного
+ * купола isSky. У каждой камеры (viewParms_t) своя маска объёмов — её заполняет
+ * R_SetupVolumeRules():
+ *  - проход 3D-скайбокса (VPF_SKYBOX3D) — СТРОГО ~VOLUME_SKY (0xFFFFFFFD):
+ *    рисуются только поверхности группы VOLUME_SKY (мини-мир + купол),
+ *    никакая другая геометрия мира в этот проход не попадает;
+ *  - все остальные камеры — правила сцены из RE_BeginScene:
+ *      worldspawn "volumeflags" (вне display) и func_display blacklist —
+ *      НЕ РИСУЙ поверхности, чьи volumeFlags пересекаются с маской
+ *      (по умолчанию VOLUME_SKY — мир не рисует поверхности скайбокса);
+ *      func_display whitelist — РИСУЙ ТОЛЬКО поверхности, чьи volumeFlags
+ *      входят в белый список (volumeShowFlags), остальное скрывается.
+ *
+ * Тени: поверхности группы VOLUME_SKY не участвуют в тенях от солнца; в тенях
+ * от dlight — только при r_dynamicLightSkybox.
+ *
+ * По умолчанию worldspawn "volumeflags" = VOLUME_SKY — вне display-объёмов
+ * копия неба скрыта, виден только сам небесный купол.
+ *
+ * Noire: Это куда точнее чем ебанный PVS, PVS никогда не работал нормально на открытых пространствах,
+ * его архитектура рассчитана на закрытые пространства, это математически доказуемо, большая карта
+ * 16тыс на 16тыс юнитов будет компилироваться крайне долго если размер сетки 256, её рекурсивный обход
+ * сожрет больше FPS чем сэкономленная геометрия, а за огромное время компиляции, можно самому грамотно
+ * расставить объёмы туда, где они точно отрежут больше половины карты, за одну лишь битовую операцию.
+ * Увеличение blocksize в BSP, сделает VIS еще вреднее, он так и геометрию не обрежет, так и рекурсией
+ * задавит и так нагруженный CPU.
+ * Так еще объёмы видимости более прозрачны и понятны, даже мапперам, так как мапперу проще поставить
+ * объем в подвале, чем пытаться по всей карте расставлять hint и другие вещи.
+ * P.S: Я сам не ебу куда эти hint расставлять, ибо тут все от удачи зависит, один hint помогает, делает
+ * BSP разрез там где это необходимо, а другой разрежет на кучу мелких листьев и принесет больше вреда чем пользы.
+ */
+#define VOLUME_WORLD 0x00000001
+#define VOLUME_SKY 0x00000002
+
+/*
+ * Флаги прохода рендера (viewParms_t.flags).
+ *
+ * Состав камеры:
+ *  VPF_NOVIEWMODEL      — не рисовать view-модель (оружие от 1-го лица)
+ *  VPF_FARPLANEFRUSTUM  — фрустум без дальней плоскости (нужен для скай-купола)
+ *
+ * Теневые проходы (рисуют только глубину):
+ *  VPF_SHADOWMAPS       — теневая кубмапа dlight (6 граней в tr.dlightShadowFbo)
+ *  VPF_DEPTHSHADOW      — глубинный проход для теней (солнце или dlight)
+ *  VPF_DEPTHCLAMP       — glDepthClamp для ортографических каскадов солнца
+ *  VPF_DLIGHTSHADOW     — это проход тени конкретного dlight (маски dlight)
+ *  VPF_ORTHOGRAPHIC     — ортографическая проекция (каскады солнца)
+ *  VPF_USESUNLIGHT      — в шейдерах доступны shadowmap-тени солнца
+ *
+ * Подпроходы-отражения и двухпроходный 3D-скайбокс (misc_skybox):
+ *  VPF_CUBEMAP          — грань кубмапы отражений (VPF_CUBEMAP внутри неё сам по себе не используется — кубмапы без кубмап)
+ *  VPF_WATERREFLECTION  — планарное отражение воды; сама вода не рисуется
+ *  VPF_SKYBOX3D         — ПРОХОД 1 3D-скайбокса: камера в мини-мире, рендерится СТРОГО только группа неба (маска ~VOLUME_SKY, 0xFFFFFFFD): 2D-скай + геометрия мини-мира, ничего из основного мира
+ *  VPF_SKYDRAWN         — ПРОХОД 2 (основной мир): скайбокс уже на экране, SURF_SKY не рисуется (просвечивает проход 1). По его ГЛУБИНЕ считается оклюзия sun rays (только тут солнце перекрывается настоящей картой)
+ *  VPF_KEEPCOLOR        — не чистить цветовой буфер: второй проход рисуется поверх первого (кубмапы и отражения воды)
+ */
+typedef enum {
+	// состав камеры
+	VPF_NOVIEWMODEL = 0x01,
+	VPF_FARPLANEFRUSTUM = 0x80,
+
+	// теневые проходы
+	VPF_SHADOWMAPS = 0x02,
+	VPF_DEPTHSHADOW = 0x04,
+	VPF_DEPTHCLAMP = 0x08,
+	VPF_DLIGHTSHADOW = 0x10,
+	VPF_ORTHOGRAPHIC = 0x20,
+	VPF_USESUNLIGHT = 0x40,
+
+	// подпроходы-отражения и 3D-скайбокс
+	VPF_CUBEMAP = 0x100,
+	VPF_WATERREFLECTION = 0x200,
+	VPF_SKYBOX3D = 0x400,
+	VPF_SKYDRAWN = 0x800,
+	VPF_KEEPCOLOR = 0x1000
+} viewParmFlags_t;
 
 typedef struct {
 	orientationr_t or ;
@@ -825,6 +910,10 @@ typedef struct {
 	bool isPortal;     // true if this view is through a portal
 	bool isMirror;     // the portal is a mirror, invert the face culling
 	viewParmFlags_t flags;
+
+	unsigned volumeFlags;
+	bool volumeShowOnly;
+	unsigned volumeShowFlags;
 	int frameSceneNum;             // copied from tr.frameSceneNum
 	int frameCount;                // copied from tr.frameCount
 	cplane_t portalPlane;          // clip anything behind this if mirroring
@@ -1116,7 +1205,6 @@ typedef struct cullinfo_s {
 
 	vec3_t center;        // (bounds[0] + bounds[1]) * 0.5
 	float radiusSquared;  // radius * radius
-	float fogDistance;    // кэш дистанции от камеры до ближайшей точки поверхности, вычисляется в R_FogCullSurface
 } cullinfo_t;
 
 typedef struct msurface_s {
@@ -1125,6 +1213,7 @@ typedef struct msurface_s {
 	int fogIndex;
 	int surfaceFlags;
 	bool hasFog;
+	unsigned volumeFlags;  // группы объёмов, к которым принадлежит поверхность: базовая (VOLUME_WORLD / VOLUME_SKY) + func_volume spawnflags; КОПИЯ неба (мини-мир 3D-скайбокса) несёт РОВНО VOLUME_SKY
 	bool useCubemap;
 	vec3_t cubemapOrigin;
 	float cubemapBound;
@@ -1133,7 +1222,6 @@ typedef struct msurface_s {
 	vec3_t waterCenter;  // center of the surface bounds
 	cullinfo_t cullinfo;
 	bool doCull;
-	bool doFogCull;
 
 	surfaceType_t* data;  // any of srf*_t
 } msurface_t;
@@ -1166,6 +1254,17 @@ typedef struct {
 	int numSurfaces;
 } bmodel_t;
 
+typedef struct volumeInfo_s {
+	vec3_t bounds[2];
+	unsigned spawnflags;  // ключ "spawnflags" — маска видимости
+} volumeInfo_t;
+
+typedef struct displayInfo_s {
+	vec3_t bounds[2];
+	unsigned spawnflags;  // ключ "spawnflags" — маска видимости
+	bool whitelist;       // ключ "whitelist" "0/1" — 1: скрывать всё, кроме перечисленного
+} displayInfo_t;
+
 typedef struct {
 	char name[MAX_QEXTENDEDPATH];      // ie: maps/tim_dm2.bsp
 	char baseName[MAX_QEXTENDEDPATH];  // ie: tim_dm2
@@ -1197,6 +1296,30 @@ typedef struct {
 
 	int numfogs;
 	fog_t* fogs;
+
+	// 3D skybox из энтити misc_skybox
+	bool hasSkybox;
+	vec3_t skyboxOrigin;  // точка внутри мини-мира, к которой привязывается камера прохода 1
+	float skyboxScale;    // делитель смещения игрока (scale n => смещение/ n)
+
+	// func_volume / func_display
+	int numVolumes;
+	volumeInfo_t* volumes;
+	int numDisplays;
+	displayInfo_t* displays;
+
+	// границы группы неба: объединение func_volume со spawnflags 2 — "коробка
+	// скайбокса", объём вокруг копии мира. Камера прохода 1 (RE_RenderScene)
+	// считает игрока, находящегося внутри этих границ, вошедшим в коробку, и
+	// ставит камеру прямо в его точку (1:1) — иначе смещение vieworg/scale,
+	// раздутый координатами коробки (~skyboxOrigin), уводил камеру из мини-мира
+	// и проход 1 рисовался пустым. Нет объёмов со spawnflags 2 — нет коррекции.
+	bool hasSkyGroupBounds;
+	vec3_t skyGroupBounds[2];
+
+	// базовая маска объёмов из worldspawn ("volumeflags"), активна, когда игрок
+	// не находится ни в одном display-объёме; по умолчанию VOLUME_SKY
+	unsigned baseVolumeFlags;
 
 	vec3_t lightGridOrigin;
 	vec3_t lightGridSize;
@@ -1567,6 +1690,20 @@ typedef struct {
 	float waterFoundDistSq;
 	vec3_t waterFoundCenter;
 
+	// правила видимости объёмов СЦЕНЫ (RE_BeginScene -> R_SetupVolumeRules ->
+	// viewParms_t.volumeFlags -> R_AddWorldSurface).
+	// volumeFlags — маска-ЧЁРНЫЙ СПИСОК: НЕ РИСУЙ поверхности, чьи volumeFlags
+	// пересекаются с ней. Вне display-объёмов маска берётся из worldspawn
+	// "volumeflags" (по умолчанию VOLUME_SKY — вне display скрыта КОПИЯ неба,
+	// см. VOLUME_SKY); внутри func_display — его spawnflags.
+	unsigned volumeFlags;
+
+	// func_display whitelist: РИСУЙ ТОЛЬКО поверхности, чьи volumeFlags
+	// пересекаются с volumeShowFlags; всё остальное скрывается.
+	// Проход 3D-скайбокса оба правила игнорирует: у него СТРОГО ~VOLUME_SKY.
+	bool volumeShowOnly;
+	unsigned volumeShowFlags;
+
 	trRefEntity_t* currentEntity;
 	trRefEntity_t worldEntity;  // point currentEntity at this when rendering world
 	int currentEntityNum;
@@ -1715,8 +1852,6 @@ extern cvar_t* r_toneMapMin;
 extern cvar_t* r_toneMapAvg;
 extern cvar_t* r_toneMapMax;
 
-extern cvar_t* r_skybox;
-
 extern cvar_t* r_sunRays;
 extern cvar_t* r_sunRaysStrength;
 extern cvar_t* r_sunSize;
@@ -1743,13 +1878,14 @@ extern cvar_t* r_reflectionsEntities;
 extern cvar_t* r_reflectionWater;            // 1 = SURF_CUBEMAP_WATER surfaces use planar reflections instead of cubemaps
 extern cvar_t* r_reflectionWaterScale;       // size of the reflection texture relative to the screen
 extern cvar_t* r_reflectionWaterDistortion;  // how strongly the normalmap distorts the reflection (world units)
+extern cvar_t* r_reflectionsSkybox;          // 3D skybox (мини-мир) в кубмапах отражений (r_reflections)
+extern cvar_t* r_waterReflectionsSkybox;     // 3D skybox (мини-мир) в планарных отражениях воды (r_reflectionWater)
 
 extern cvar_t* r_jiggle;           // enable jiggle bones (hair / cloth)
 extern cvar_t* r_jiggleGravity;    // gravity of the jiggle simulation (z, units/s^2)
 extern cvar_t* r_jiggleStiffness;  // spring stiffness pulling the tip back to the animated pose
 extern cvar_t* r_jiggleDamping;    // velocity damping
 extern cvar_t* r_jiggleMaxSpeed;   // max swing speed of the jiggle tip (units/s, 0 = no cap)
-extern cvar_t* r_reflectionsSkybox;
 extern cvar_t* r_deluxeSpecular;
 extern cvar_t* r_depthPrepass;
 extern cvar_t* r_shadows;
@@ -1757,7 +1893,6 @@ extern cvar_t* r_shadowUpdate;
 extern cvar_t* r_shadowResolution;
 extern cvar_t* r_shadowDistance;
 extern cvar_t* r_shadowFilter;
-extern cvar_t* r_shadowSkybox;
 
 extern cvar_t* r_fog;
 extern cvar_t* r_fogDensity;
@@ -1766,6 +1901,8 @@ extern cvar_t* r_fogColorG;
 extern cvar_t* r_fogColorB;
 extern cvar_t* r_fogStart;
 extern cvar_t* r_fogEnd;
+
+extern cvar_t* r_3dskybox;
 
 /* Procedural sky controls (surfaceparm sky; no skyparms required). */
 extern cvar_t* r_skyTopColor;
@@ -1821,6 +1958,26 @@ static ID_INLINE bool ShaderRequiresCPUDeforms(const shader_t* shader) {
 	return false;
 }
 
+// глобальный (атмосферный) туман включён: r_fog + ненулевая плотность,
+// кадр не запросил RDF_NOFOG. Используется бекэндом (туман) и выбором варианта
+// generic-программы с USE_FOG.
+static ID_INLINE bool R_GlobalFogActive(void) { return tr.world && r_fog->integer && r_fogDensity->value > 0.001 && !(backEnd.refdef.rdflags & RDF_NOFOG); }
+
+/*
+ * Масштаб дистанций тумана для текущего вида.
+ *
+ * В проходе 3D-скайбокса (VPF_SKYBOX3D) камера находится внутри мини-мира и
+ * все дистанции в skyboxScale раз меньше мировых. Чтобы туман скайбокса
+ * совпадал с туманом основного вида (та же дальность и градиент в масштабе
+ * скайбокса), дистанции тумана делятся на масштаб скайбокса: start/S и end/S
+ * при той же плотности дают тот же результат для соответствующих точек.
+ * Возвращает множитель для r_fogStart / r_fogEnd (градиент и кулинг по туману).
+ */
+static ID_INLINE float R_ViewFogScale(const viewParms_t* vp) {
+	if((vp->flags & VPF_SKYBOX3D) && tr.world && tr.world->hasSkybox && tr.world->skyboxScale > 1.0f) return 1.0f / tr.world->skyboxScale;
+	return 1.0f;
+}
+
 //====================================================================
 
 void R_RenderView(viewParms_t* parms);
@@ -1837,6 +1994,12 @@ void R_AddRailSurfaces(trRefEntity_t* e, bool isUnderwater);
 void R_AddLightningBoltSurfaces(trRefEntity_t* e);
 
 void R_AddPolygonSurfaces(void);
+void R_AddFlareSurfaces(void);
+
+// загрузка worldspawn ("volumeflags"), misc_skybox / func_volume / func_display из энтити-лампы карты
+void R_LoadMapEntitySystems(void);
+// назначение volumeFlags поверхностям мира по объёмам func_volume
+void R_AssignVolumeFlagsToWorldSurfaces(void);
 
 void R_DecomposeSort(uint64_t sort, int* entityNum, shader_t** shader, int* fogNum, int* dlightMap);
 

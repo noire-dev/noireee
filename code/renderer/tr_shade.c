@@ -160,7 +160,7 @@ void RB_BeginSurface(shader_t* shader, int fogNum, bool useCubemap, const vec3_t
 		DlightMask_Or(&tess.dlightBits, &backEnd.currentEntity->needDlights);
 	}
 
-	if(backEnd.viewParms.flags & VPF_SHADOWMAP) {
+	if(backEnd.viewParms.flags & VPF_SHADOWMAPS) {
 		tess.currentStageIteratorFunc = RB_StageIteratorGeneric;
 	}
 }
@@ -838,11 +838,19 @@ void RB_FogPass(void) {
 		vec4_t color;
 		vec4_t fogDistanceVector, fogDepthVector = {0, 0, 0, 0};
 		float eyeT;
-		float startDist = r_fogStart->value;
-		float endDist = r_fogEnd->value;
-		float range = endDist - startDist;
+		float fogScale;
+		float startDist, endDist;
+		float range;
 		float scale;
 		vec3_t local;
+
+		// в проходе 3D-скайбокса дистанции в skyboxScale раз меньше мировых —
+		// масштабируем дистанции тумана, чтобы плотность и градиент совпадали
+		// с основным видом (см. R_ViewFogScale)
+		fogScale = R_ViewFogScale(&backEnd.viewParms);
+		startDist = r_fogStart->value * fogScale;
+		endDist = r_fogEnd->value * fogScale;
+		range = endDist - startDist;
 
 		if(range < 1.0f) range = 1.0f;
 
@@ -1238,7 +1246,7 @@ static void RB_IterateStagesGeneric(shaderCommands_t* input) {
 		// planar water reflection (r_reflectionWater)
 		if(r_reflectionWater->integer && tr.waterReflectionImage && pStage->glslShaderGroup == tr.lightallShader && !backEnd.depthFill) {
 			vec4_t waterInfo;
-			bool useWater = (tess.shader->surfaceFlags & SURF_CUBEMAP_WATER) && backEnd.viewParms.hasWaterReflection && !(backEnd.viewParms.flags & VPF_WATERREFLECT);
+			bool useWater = (tess.shader->surfaceFlags & SURF_CUBEMAP_WATER) && backEnd.viewParms.hasWaterReflection && !(backEnd.viewParms.flags & VPF_WATERREFLECTION);
 
 			// Never leave the reflection image bound while it is the render target (the mirrored view
 			// itself is drawn with these programs too): bind a dummy texture unless the water uses it.
@@ -1420,7 +1428,7 @@ void RB_StageIteratorGeneric(void) {
 		bool newCullFront = cullFront;
 		bool oldCullFront = cullFront;
 
-		if((backEnd.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW)) && !(backEnd.viewParms.flags & VPF_ORTHOGRAPHIC)) newCullFront = !newCullFront;  // FIX
+		if((backEnd.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW)) && !(backEnd.viewParms.flags & VPF_ORTHOGRAPHIC)) newCullFront = !newCullFront;  // FIX
 		if(backEnd.viewParms.flags & VPF_DEPTHSHADOW) oldCullFront = !oldCullFront;
 
 		if(backEnd.viewParms.isMirror) {
@@ -1435,7 +1443,7 @@ void RB_StageIteratorGeneric(void) {
 
 		cullFront = newCullFront;
 
-		if((backEnd.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW)) && !(input->shader->surfaceFlags & (SURF_SKYBOX | SURF_DISPLACEMENT)) && oldCullFront != newCullFront) {
+		if((backEnd.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW)) && oldCullFront != newCullFront) {
 			drawSecondCull = true;
 			secondCullFront = oldCullFront;
 		}
@@ -1480,7 +1488,7 @@ void RB_StageIteratorGeneric(void) {
 	//
 	// render shadowmap if in shadowmap mode
 	//
-	if(backEnd.viewParms.flags & VPF_SHADOWMAP) {
+	if(backEnd.viewParms.flags & VPF_SHADOWMAPS) {
 		if(input->shader->sort == SS_OPAQUE) {
 			RB_RenderShadowmap(input);
 

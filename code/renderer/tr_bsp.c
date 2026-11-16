@@ -1986,6 +1986,308 @@ bool R_ParseSpawnVars(char* spawnVarChars, int maxSpawnVarChars, int* numSpawnVa
 	return true;
 }
 
+/*
+=================
+R_ParseEntityKeys
+
+Читает следующий блок энтити "{ key value ... }" из энтити-лампы.
+Возвращает количество ключей, -1 если данные закончились / блок битый.
+=================
+*/
+#define MAX_MAP_ENTITY_KEYS 64
+#define MAX_MAP_ENTITY_VALUENAME 256
+
+static int R_ParseEntityKeys(char** p, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME]) {
+	const char* token;
+	int num = 0;
+
+	token = COM_ParseExt(p, true);
+	if(!*token) return -1;
+	if(*token != '{') return -1;
+
+	while(1) {
+		token = COM_ParseExt(p, true);
+		if(!*token || *token == '}') break;
+		Q_strncpyz(keys[num], token, MAX_MAP_ENTITY_VALUENAME);
+
+		token = COM_ParseExt(p, true);
+		if(!*token || *token == '}') break;
+		Q_strncpyz(values[num], token, MAX_MAP_ENTITY_VALUENAME);
+
+		num++;
+		if(num >= MAX_MAP_ENTITY_KEYS) break;
+	}
+
+	return num;
+}
+
+static const char* R_EntityValue(int numKeys, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], const char* key) {
+	int i;
+
+	for(i = 0; i < numKeys; i++) {
+		if(!Q_stricmp(keys[i], key)) return values[i];
+	}
+
+	return NULL;
+}
+
+// ключа нет — вектор остаётся с дефолтом вызывающего кода
+static void R_ParseEntityVec3(const char* s, vec3_t out) {
+	if(!s) return;
+	sscanf(s, "%f %f %f", &out[0], &out[1], &out[2]);
+}
+
+/*
+=================
+R_LoadMapEntitySystems
+
+Рендерерские системы, живущие в энтити-лампе карты. Парсим своим
+указателем — entityParsePoint (R_GetEntityToken) для cgame не трогаем.
+
+  worldspawn  — "volumeflags" "n": базовая маска-чёрный список объёмов, активная,
+                когда игрок не находится ни в одном display-объёме. По умолчанию
+                VOLUME_SKY — мир не рисует поверхности 3D-скайбокса (и всё, что
+                несёт бит VOLUME_SKY).
+  misc_skybox — 3D-скайбокс: "origin" "x y z", "scale" "n"
+                проход 1 рисует мир камерой skyboxOrigin + playerOrigin / scale
+  func_volume — "spawnflags" "n", границы браша из "model" "*N"
+  func_display— "spawnflags" "n", "whitelist" "0/1", границы из "model" "*N"
+=================
+*/
+void R_LoadMapEntitySystems(void) {
+	world_t* w;
+	char* p;
+	static char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME];
+	static char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME];
+	int numKeys, i, pass;
+	int numVolumes, numDisplays;
+
+	w = &s_worldData;
+
+	p = w->entityString;
+	if(!p) return;
+
+	numVolumes = 0;
+	numDisplays = 0;
+
+	w->hasSkybox = false;
+	w->skyboxScale = 16.0f;
+	VectorClear(w->skyboxOrigin);
+	w->hasSkyGroupBounds = false;
+
+	// базовая маска-чёрный список объёмов вне display-объёмов; worldspawn может
+	// переопределить ключом "volumeflags". По умолчанию VOLUME_SKY (0x2) — мир
+	// НЕ рисует поверхности скайбокса (группу VOLUME_SKY), рисует только купол.
+	w->baseVolumeFlags = VOLUME_SKY;
+
+	for(pass = 0; pass < 2; pass++) {
+		p = w->entityString;
+
+		if(pass == 1) {
+			if(numVolumes > 0) w->volumes = ri.Hunk_Alloc(numVolumes * sizeof(volumeInfo_t), h_low);
+			if(numDisplays > 0) w->displays = ri.Hunk_Alloc(numDisplays * sizeof(displayInfo_t), h_low);
+		}
+
+		while((numKeys = R_ParseEntityKeys(&p, keys, values)) >= 0) {
+			const char* classname;
+			const char* v;
+
+			classname = R_EntityValue(numKeys, keys, values, "classname");
+			if(!classname) continue;
+
+			if(!Q_stricmp(classname, "worldspawn")) {
+				// базовая маска-чёрный список вне display-объёмов ("volumeflags");
+				// поверхности, чьи volumeFlags пересекаются с ней, мир не рисует.
+				// По умолчанию VOLUME_SKY: поверхности скайбокса (чистая группа
+				// VOLUME_SKY) рисует только проход 3D-скайбокса
+				v = R_EntityValue(numKeys, keys, values, "volumeflags");
+				w->baseVolumeFlags = v ? (unsigned)atoi(v) : VOLUME_SKY;
+				continue;
+			}
+
+			if(!Q_stricmp(classname, "misc_skybox")) {
+				float scale = 16.0f;
+
+				if(!w->hasSkybox) {
+					R_ParseEntityVec3(R_EntityValue(numKeys, keys, values, "origin"), w->skyboxOrigin);
+					v = R_EntityValue(numKeys, keys, values, "scale");
+					if(v) scale = atof(v);
+					w->skyboxScale = scale > 0.0f ? scale : 16.0f;
+					w->hasSkybox = true;
+					ri.Printf(PRINT_ALL, "...3D skybox at %.0f %.0f %.0f, scale %.4f\n", w->skyboxOrigin[0], w->skyboxOrigin[1], w->skyboxOrigin[2], w->skyboxScale);
+				}
+				continue;
+			}
+
+			if(pass == 0) {
+				// первый проход — только подсчёт для точного Hunk_Alloc
+				if(!Q_stricmp(classname, "func_volume"))
+					numVolumes++;
+				else if(!Q_stricmp(classname, "func_display"))
+					numDisplays++;
+				continue;
+			}
+
+			if(!Q_stricmp(classname, "func_volume") && w->numVolumes < numVolumes) {
+				volumeInfo_t* vo = &w->volumes[w->numVolumes];
+				int modelIndex;
+
+				memset(vo, 0, sizeof(*vo));
+
+				v = R_EntityValue(numKeys, keys, values, "model");
+				modelIndex = (v && v[0] == '*') ? atoi(v + 1) : 0;
+				if(modelIndex > 0 && modelIndex < w->numBModels) {
+					VectorCopy(w->bmodels[modelIndex].bounds[0], vo->bounds[0]);
+					VectorCopy(w->bmodels[modelIndex].bounds[1], vo->bounds[1]);
+				} else {
+					ri.Printf(PRINT_WARNING, "WARNING: func_volume with bad or missing model key, ignored\n");
+					continue;
+				}
+
+				v = R_EntityValue(numKeys, keys, values, "spawnflags");
+				vo->spawnflags = v ? (unsigned)atoi(v) : 0;
+
+				// группа неба (spawnflags 2) — "коробка скайбокса": запоминаем
+				// объединённые границы объёмов копии мира. По ним камера прохода 1
+				// (RE_RenderScene) распознаёт игрока, физически вошедшего в коробку
+				if(vo->spawnflags & VOLUME_SKY) {
+					int axis;
+
+					if(!w->hasSkyGroupBounds) {
+						w->hasSkyGroupBounds = true;
+						VectorCopy(vo->bounds[0], w->skyGroupBounds[0]);
+						VectorCopy(vo->bounds[1], w->skyGroupBounds[1]);
+					} else {
+						for(axis = 0; axis < 3; axis++) {
+							if(vo->bounds[0][axis] < w->skyGroupBounds[0][axis]) w->skyGroupBounds[0][axis] = vo->bounds[0][axis];
+							if(vo->bounds[1][axis] > w->skyGroupBounds[1][axis]) w->skyGroupBounds[1][axis] = vo->bounds[1][axis];
+						}
+					}
+				}
+
+				w->numVolumes++;
+			} else if(!Q_stricmp(classname, "func_display") && w->numDisplays < numDisplays) {
+				displayInfo_t* di = &w->displays[w->numDisplays];
+				int modelIndex;
+
+				memset(di, 0, sizeof(*di));
+
+				v = R_EntityValue(numKeys, keys, values, "model");
+				modelIndex = (v && v[0] == '*') ? atoi(v + 1) : 0;
+				if(modelIndex > 0 && modelIndex < w->numBModels) {
+					VectorCopy(w->bmodels[modelIndex].bounds[0], di->bounds[0]);
+					VectorCopy(w->bmodels[modelIndex].bounds[1], di->bounds[1]);
+				} else {
+					ri.Printf(PRINT_WARNING, "WARNING: func_display with bad or missing model key, ignored\n");
+					continue;
+				}
+
+				v = R_EntityValue(numKeys, keys, values, "spawnflags");
+				di->spawnflags = v ? (unsigned)atoi(v) : 0;
+				v = R_EntityValue(numKeys, keys, values, "whitelist");
+				di->whitelist = v ? atoi(v) != 0 : false;
+
+				w->numDisplays++;
+			}
+		}
+
+		// сброс счётчиков заполнения перед вторым проходом
+		if(pass == 0) {
+			w->numVolumes = 0;
+			w->numDisplays = 0;
+		}
+	}
+
+	if(numVolumes || numDisplays) {
+		ri.Printf(PRINT_ALL, "...loaded %d volumes, %d displays\n", numVolumes, numDisplays);
+	}
+}
+
+/*
+=================
+R_AssignVolumeFlagsToWorldSurfaces
+
+Разметка поверхностей группами объёмов. Базовые группы для ВСЕХ поверхностей
+карты (мир и brush-энтити):
+  - небо (isSky)          -> VOLUME_SKY  (чёткое правило: небо и 3D-скайбокс
+                             всегда принадлежат группе VOLUME_SKY)
+  - остальная геометрия   -> VOLUME_WORLD
+Дополнительно каждой world-поверхности, ВСЕ вершины которой целиком лежат
+внутри func_volume, назначаются spawnflags этого объёма:
+  - бит 2 (VOLUME_SKY) — КОПИЯ неба (мини-мир 3D-скайбокса): поверхность
+    получает РОВНО VOLUME_SKY, без VOLUME_WORLD и кастомных битов. Иначе
+    проход 3D-скайбокса (маска ~VOLUME_SKY = 0xFFFFFFFD) отсеет её как
+    "чужую" геометрию, и мини-мир не нарисуется никогда.
+  - биты 4, 8, 16, ... — кастомные группы картостроителя поверх базовой
+    группы (с поверхностями группы неба не смешиваются).
+Вызывается один раз при загрузке карты после загрузки поверхностей.
+=================
+*/
+void R_AssignVolumeFlagsToWorldSurfaces(void) {
+	world_t* w;
+	int i, j, k, v;
+	msurface_t* surf;
+	srfBspSurface_t* bspSurf;
+	srfVert_t* verts;
+	int numVerts;
+	volumeInfo_t* vol;
+	bool allInside;
+
+	w = &s_worldData;
+
+	// базовые группы для всех поверхностей, включая brush-энтити (двери,
+	// func_static и т.д. — иначе whitelist display скрывал бы их всегда)
+	for(i = 0; i < w->numsurfaces; i++) {
+		surf = &w->surfaces[i];
+		surf->volumeFlags = (surf->shader && surf->shader->isSky) ? VOLUME_SKY : VOLUME_WORLD;
+	}
+
+	for(i = 0; i < w->numWorldSurfaces; i++) {
+		surf = &w->surfaces[i];
+
+		switch(*(surf->data)) {
+			case SF_FACE:
+			case SF_GRID:
+			case SF_TRIANGLES:
+				bspSurf = (srfBspSurface_t*)surf->data;
+				numVerts = bspSurf->numVerts;
+				verts = bspSurf->verts;
+				break;
+
+			default: continue;
+		}
+
+		if(!verts || numVerts <= 0) continue;
+
+		for(v = 0; v < w->numVolumes; v++) {
+			vol = &w->volumes[v];
+
+			allInside = true;
+			for(j = 0; j < numVerts && allInside; j++) {
+				for(k = 0; k < 3; k++) {
+					if(verts[j].xyz[k] < vol->bounds[0][k] || verts[j].xyz[k] > vol->bounds[1][k]) {
+						allInside = false;
+						break;
+					}
+				}
+			}
+
+			if(allInside) {
+				if(vol->spawnflags & VOLUME_SKY) {
+					// группа неба (копия мира для 3D-скайбокса): ТОЛЬКО VOLUME_SKY,
+					// без VOLUME_WORLD и кастомных битов — иначе проход 3D-скайбокса
+					// с маской ~VOLUME_SKY (0xFFFFFFFD) её не нарисует
+					surf->volumeFlags = VOLUME_SKY;
+				} else if(surf->volumeFlags != VOLUME_SKY) {
+					// кастомные группы картостроителя поверх базовой группы мира;
+					// с группой неба (уже назначенной выше) не смешиваются
+					surf->volumeFlags |= vol->spawnflags;
+				}
+			}
+		}
+	}
+}
+
 void R_CreateBaseCubemap(void) {
 	tr.cubemap = ri.Hunk_Alloc(sizeof(*tr.cubemap), h_low);
 	memset(tr.cubemap, 0, sizeof(*tr.cubemap));
@@ -2205,6 +2507,11 @@ void RE_LoadWorldMap(const char* name) {
 	R_LoadSubmodels(&header->lumps[LUMP_MODELS]);
 	R_LoadVisibility(&header->lumps[LUMP_VISIBILITY]);
 	R_LoadLightGrid(&header->lumps[LUMP_LIGHTGRID]);
+
+	// worldspawn volumeflags / misc_skybox / func_volume / func_display
+	// из энтити-лампы, затем разметка world-поверхностей группами объёмов
+	R_LoadMapEntitySystems();
+	R_AssignVolumeFlagsToWorldSurfaces();
 
 	// determine vertex light directions
 	R_CalcVertexLightDirs();

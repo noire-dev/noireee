@@ -45,15 +45,14 @@ static bool R_CullSurface(msurface_t* surf) {
 			return false;
 		}
 
-		if((tr.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW)) &&
-		   !(surf->shader->surfaceFlags & (SURF_SKYBOX | SURF_DISPLACEMENT))) {
+		if((tr.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW))) {
 			// Back end draws this surface twice: first with the seam-fixing
 			// cull rule, then with the old rule. Don't cull it here, otherwise
 			// the second pass can never fill the holes.
 			return false;
 		}
 
-		if((tr.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW)) && !(tr.viewParms.flags & VPF_ORTHOGRAPHIC)) { // FIX
+		if((tr.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW)) && !(tr.viewParms.flags & VPF_ORTHOGRAPHIC)) {  // FIX
 			if(ct == CT_FRONT_SIDED) {
 				ct = CT_BACK_SIDED;
 			} else {
@@ -118,7 +117,7 @@ static bool R_DlightCullSurface(msurface_t* surf, dlightMask_t* dlightBits) {
 	dlight_t* dl;
 
 	if(!DlightMask_Any(dlightBits)) {
-		if(!(tr.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW))) {
+		if(!(tr.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW))) {
 			switch(*surf->data) {
 				case SF_FACE:
 				case SF_GRID:
@@ -165,7 +164,7 @@ static bool R_DlightCullSurface(msurface_t* surf, dlightMask_t* dlightBits) {
 		case SF_FACE:
 		case SF_GRID:
 		case SF_TRIANGLES:
-			if(!(tr.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW))) {
+			if(!(tr.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW))) {
 				DlightMask_Copy(&((srfBspSurface_t*)surf->data)->dlightBits, dlightBits);
 			}
 			break;
@@ -213,62 +212,59 @@ static void R_FrustumCullSurface(msurface_t* surf) {
 	}
 }
 
-static void R_FogCullSurface(msurface_t* surf) {
-	cullinfo_t* ci = &surf->cullinfo;
-
-	if(surf->doCull) {
-		ci->fogDistance = 0.0f;
-		return;
-	}
-
-	if(ci->type & CULLINFO_BOX) {
-		const float fogEndSq = (r_fogEnd->value * r_fogEnd->value) / r_fogDensity->value;
-		vec3_t toCam;
-		float distSq, boundSq, threshold;
-
-		VectorSubtract(ci->center, backEnd.viewParms.or.origin, toCam);
-		distSq = VectorLengthSquared(toCam);
-		boundSq = ci->radiusSquared;
-
-		threshold = sqrtf(fogEndSq) + sqrtf(boundSq);
-		surf->doFogCull = distSq > threshold * threshold;
-
-		float dist = sqrtf(distSq) - sqrtf(boundSq);
-		ci->fogDistance = dist > 0.0f ? dist : 0.0f;
-	} else {
-		ci->fogDistance = 0.0f;
-		surf->doFogCull = false;
-	}
-}
-
 static void R_AddWorldSurface(msurface_t* surf, const dlightMask_t* sourceDlightBits) {
 	dlightMask_t dlightBits;
 	int fogIndex;
 
+	/*
+	 * Правила видимости объёмов ЭТОЙ камеры (маску ставит R_SetupVolumeRules).
+	 * Небесный купол (isSky, "портальное небо") объёмами не скрывается никогда —
+	 * это фон кадра, без него проход 2 3D-скайбокса оставил бы дыры. Объёмами
+	 * управляется КОПИЯ неба: 3D-скайбокс (мини-мир), помеченный func_volume
+	 * со spawnflags 2 (ТОЛЬКО VOLUME_SKY), и весь остальной мир.
+	 *
+	 * Проход 3D-скайбокса (VPF_SKYBOX3D) получил СТРОГО ~VOLUME_SKY (0xFFFFFFFD) —
+	 * здесь остаются только поверхности группы неба. Все остальные камеры
+	 * (мир, отражения, кубмапы, тени) получили правила сцены: worldspawn
+	 * "volumeflags" (по умолчанию VOLUME_SKY — мир не рисует поверхности
+	 * скайбокса) либо func_display, если камера внутри него.
+	 */
+	if(!surf->shader->isSky) {
+		if(tr.viewParms.volumeShowOnly) {
+			// func_display whitelist: РИСУЙ ТОЛЬКО поверхности,
+			// чьи volumeFlags входят в белый список
+			if(!(tr.viewParms.volumeShowFlags & surf->volumeFlags)) return;
+		} else if(tr.viewParms.volumeFlags & surf->volumeFlags) {
+			// worldspawn "volumeflags" / func_display blacklist:
+			// НЕ РИСУЙ поверхности с пересекающимися volumeFlags
+			return;
+		}
+	}
+
+	// Правило объёмов: группа VOLUME_SKY (небо и 3D-скайбокс) не участвует в
+	// тенях от солнца (VPF_DEPTHSHADOW ортографические каскады). Динамические
+	// тени от dlight на скайбоксе разрешены — только при r_dynamicLightSkybox.
+	// Проверка после видимости: скрытые поверхности не бросают теней.
+	if((surf->volumeFlags & VOLUME_SKY) && (tr.viewParms.flags & VPF_DEPTHSHADOW)) {
+		if(!(tr.viewParms.flags & VPF_DLIGHTSHADOW)) return;
+		if(!r_dynamicLightSkybox->integer) return;
+	}
+
+	// 3D skybox, проход 2: небо уже нарисовано проходом 1 и просвечивает
+	// сквозь просветы SURF_SKY — сами небесные поверхности не рисуем
+	if((tr.viewParms.flags & VPF_SKYDRAWN) && surf->shader->isSky) return;
+
 	// the planar reflection of the water must not contain the water itself
-	if((tr.viewParms.flags & VPF_WATERREFLECT) && (surf->shader->surfaceFlags & SURF_CUBEMAP_WATER)) return;
+	if((tr.viewParms.flags & VPF_WATERREFLECTION) && (surf->shader->surfaceFlags & SURF_CUBEMAP_WATER)) return;
 
 	if(sourceDlightBits)
 		DlightMask_Copy(&dlightBits, sourceDlightBits);
 	else
 		DlightMask_Clear(&dlightBits);
 
-	// if(surf->shader->surfaceFlags & SURF_DISPLACEMENT) return; // Тут я проверял дисплейсменты, они реально работают и правильно помечаются
-
-	if((surf->surfaceFlags & SURF_SKYBOX) && !r_dynamicLightSkybox->integer) {
-		DlightMask_Clear(&dlightBits);
-		if(tr.viewParms.flags & VPF_DLIGHTSHADOW) return;
-	}
-
-	if(surf->surfaceFlags & SURF_SKYBOX) {
-		bool allowShadowSkybox = (tr.viewParms.flags & VPF_DLIGHTSHADOW) ? r_dynamicLightSkybox->integer : r_shadowSkybox->integer;
-		if((tr.viewParms.flags & VPF_NOCUBEMAPS && !r_reflectionsSkybox->integer) || (tr.viewParms.flags & VPF_DEPTHSHADOW && !allowShadowSkybox) || !r_skybox->integer) return;
-	}
-
 	R_FrustumCullSurface(surf);
-	if((tr.frameCount & 63) == 0) R_FogCullSurface(surf);
 
-	if(surf->doCull || surf->doFogCull) return;
+	if(surf->doCull) return;
 
 	if(!(tr.viewParms.targetFbo == tr.dlightShadowFbo && (tr.viewParms.flags & VPF_DEPTHSHADOW))) {
 		if(R_CullSurface(surf)) return;

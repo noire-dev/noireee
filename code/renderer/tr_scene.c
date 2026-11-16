@@ -889,6 +889,47 @@ void RE_BeginScene(const refdef_t* fd) {
 		tr.refdef.blurFactor = 0.0f;
 	}
 
+	/*
+	 * func_display: в начале сцены ищем первый объём, в котором находится камера,
+	 * и задаём правила видимости объёмов СЦЕНЫ (кроме небесного купола isSky —
+	 * тот объёмами не скрывается никогда). Эти правила R_SetupVolumeRules()
+	 * раздаёт всем камерам кадра — миру, отражениям, кубмапам, теням.
+	 *
+	 * Единственное исключение — проход 3D-скайбокса (VPF_SKYBOX3D): он всегда
+	 * рендерится СТРОГО с volumeFlags = ~VOLUME_SKY (0xFFFFFFFD), только группа
+	 * неба, и правил сцены не получает.
+	 *
+	 * - вне display-объёмов действует worldspawn "volumeflags" (blacklist):
+	 *   НЕ РИСУЙ поверхности, чьи volumeFlags пересекаются с маской.
+	 *   По умолчанию VOLUME_SKY — вне display скрыта КОПИЯ неба (мини-мир,
+	 *   помеченный func_volume spawnflags 2); сам небесный купол остаётся виден.
+	 * - func_display blacklist: НЕ РИСУЙ перечисленные volumeFlags.
+	 * - func_display whitelist: РИСУЙ ТОЛЬКО поверхности с перечисленными
+	 *   volumeFlags, всё остальное скрыто.
+	 */
+	tr.volumeFlags = tr.world ? tr.world->baseVolumeFlags : 0;
+	tr.volumeShowOnly = false;
+	tr.volumeShowFlags = 0;
+	if(tr.world && !(tr.refdef.rdflags & RDF_NOWORLDMODEL)) {
+		int i;
+
+		for(i = 0; i < tr.world->numDisplays; i++) {
+			displayInfo_t* di = &tr.world->displays[i];
+
+			if(tr.refdef.vieworg[0] >= di->bounds[0][0] && tr.refdef.vieworg[0] <= di->bounds[1][0] && tr.refdef.vieworg[1] >= di->bounds[0][1] && tr.refdef.vieworg[1] <= di->bounds[1][1] && tr.refdef.vieworg[2] >= di->bounds[0][2] && tr.refdef.vieworg[2] <= di->bounds[1][2]) {
+				if(di->whitelist) {
+					// whitelist: РИСУЙ ТОЛЬКО поверхности с volumeFlags из списка
+					tr.volumeShowOnly = true;
+					tr.volumeShowFlags = di->spawnflags;
+				} else {
+					// blacklist: НЕ РИСУЙ перечисленные volumeFlags
+					tr.volumeFlags = di->spawnflags;
+				}
+				break;
+			}
+		}
+	}
+
 	// derived info
 
 	tr.refdef.floatTime = tr.refdef.time * 0.001;
@@ -1075,6 +1116,63 @@ void RE_RenderScene(const refdef_t* fd) {
 
 	if(!(fd->rdflags & RDF_NOWORLDMODEL) && (r_shadows->integer || r_depthPrepass->integer)) {
 		parms.flags = VPF_USESUNLIGHT;
+	}
+
+	/*
+	 * 3D skybox (misc_skybox), метод Source Engine — 2 прохода в один кадр.
+	 * Правила объёмов у проходов РАЗНЫЕ (ставит R_SetupVolumeRules):
+	 *
+	 * Проход 1 (VPF_SKYBOX3D): камера в точке skyboxOrigin + playerOrigin / scale,
+	 * углы (viewaxis) и FOV те же, что у игрока. volumeFlags = СТРОГО
+	 * ~VOLUME_SKY (0xFFFFFFFD) — рендерится ТОЛЬКО группа неба: 2D-скай из
+	 * SURF_SKY и геометрия/пропы мини-мира (обоим назначено чистое
+	 * VOLUME_SKY); ни одна поверхность основного мира сюда не попадает.
+	 * Рендер прямо в основной фреймбуфер.
+	 *
+	 * Проход 2 (VPF_SKYDRAWN): основной мир, volumeFlags = правила сцены —
+	 * worldspawn "volumeflags" (по умолчанию VOLUME_SKY, 0000 0000 0000 0000
+	 * 0000 0000 0000 0010) либо func_display, если игрок внутри него.
+	 * Поверхности скайбокса (группа VOLUME_SKY) миром НЕ рисуются. RB_DrawSurfs
+	 * этого прохода очищает только глубину — картинка неба и мини-мира
+	 * остаётся на экране, стены рисуются поверх, а в просветах SURF_SKY
+	 * (которые в этом проходе не рисуются) просвечивает проход 1.
+	 *
+	 * Скайбокс рисуется до постобработки и вместе с миром, так что
+	 * bloom/тонемап/sun rays работают как обычно.
+	 */
+	if(tr.world && tr.world->hasSkybox && r_3dskybox->integer && !(fd->rdflags & RDF_NOWORLDMODEL)) {
+		viewParms_t skyParms = parms;
+
+		/*
+		 * Камера прохода 1. Обычный случай (игрок в основном мире):
+		 * skyboxOrigin + vieworg / scale — смещение по построению не выходит
+		 * за размеры копии мира.
+		 *
+		 * Но если игрок ФИЗИЧЕСКИ вошёл в коробку скайбокса (func_volume со
+		 * spawnflags 2 — объём вокруг копии мира; func_display whitelist
+		 * + spawnflags 2 — типичный способ сделать её видимой изнутри), его
+		 * координаты ~ skyboxOrigin: смещение vieworg/scale раздувалось на
+		 * skyboxOrigin/scale, камера вылетала из мини-мира в пустоту, PVS
+		 * становился пустым — проход 1 рисовался ЧЁРНЫМ. Экран оставался
+		 * совсем пустым: whitelist (например, "whitelist" "1", spawnflags 2)
+		 * скрывал основной мир, а купол проход 2 не рисует по VPF_SKYDRAWN,
+		 * рассчитывая на картинку прохода 1.
+		 *
+		 * Коробка — это и есть пространство копии в её масштабе, поэтому
+		 * внутри неё камера ставится прямо в точку игрока (1:1): стоя в
+		 * коробке, видишь мини-мир и небо вокруг себя.
+		 */
+		if(tr.world->hasSkyGroupBounds && fd->vieworg[0] >= tr.world->skyGroupBounds[0][0] && fd->vieworg[0] <= tr.world->skyGroupBounds[1][0] && fd->vieworg[1] >= tr.world->skyGroupBounds[0][1] && fd->vieworg[1] <= tr.world->skyGroupBounds[1][1] && fd->vieworg[2] >= tr.world->skyGroupBounds[0][2] && fd->vieworg[2] <= tr.world->skyGroupBounds[1][2]) {
+			VectorCopy(fd->vieworg, skyParms.or.origin);
+		} else {
+			VectorMA(tr.world->skyboxOrigin, 1.0f / tr.world->skyboxScale, fd->vieworg, skyParms.or.origin);
+		}
+		VectorCopy(skyParms.or.origin, skyParms.pvsOrigin);
+		skyParms.flags = VPF_SKYBOX3D;
+
+		R_RenderView(&skyParms);
+
+		parms.flags |= VPF_SKYDRAWN;
 	}
 
 	R_RenderView(&parms);

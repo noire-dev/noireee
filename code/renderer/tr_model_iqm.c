@@ -1525,7 +1525,7 @@ void R_AddIQMSurfaces(trRefEntity_t* ent) {
 	surface = data->surfaces;
 
 	// don't add third_person objects if not in a portal
-	personalModel = (ent->e.renderfx & RF_THIRD_PERSON) && !(tr.viewParms.isPortal || (tr.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW)));
+	personalModel = (ent->e.renderfx & RF_THIRD_PERSON) && !(tr.viewParms.isPortal || (tr.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW)));
 
 	{
 		int nframes = data->anim ? data->anim->num_frames : data->num_frames;

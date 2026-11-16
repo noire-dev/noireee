@@ -292,6 +292,9 @@ void RB_BeginDrawingView(void) {
 		clearBits |= GL_COLOR_BUFFER_BIT;
 	}
 
+	// 3D skybox: второй проход рисуется поверх первого (картинка неба и мини-мира уже в буфере)
+	if(backEnd.viewParms.flags & VPF_KEEPCOLOR) clearBits &= ~GL_COLOR_BUFFER_BIT;
+
 	qglClear(clearBits);
 
 	if((backEnd.refdef.rdflags & RDF_HYPERSPACE)) {
@@ -902,25 +905,32 @@ const void* RB_DrawSurfs(const void* data) {
 		RB_RenderDrawSurfList(cmd->drawSurfs, cmd->numDrawSurfs);
 	}
 
-	if(glRefConfig.framebufferObject && r_sunRays->integer) {
-		FBO_t* oldFbo = glState.currentFBO;
-		FBO_Bind(tr.sunRaysFbo);
+	{
+		bool skyboxActive = tr.world && tr.world->hasSkybox && r_3dskybox->integer && !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL);
+		bool occlusionPass = skyboxActive ? (backEnd.viewParms.flags & VPF_SKYDRAWN) != 0 : !(backEnd.viewParms.flags & VPF_SKYBOX3D);
 
-		qglClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-		qglClear(GL_COLOR_BUFFER_BIT);
+		if(glRefConfig.framebufferObject && r_sunRays->integer && occlusionPass) {
+			FBO_t* oldFbo = glState.currentFBO;
+			FBO_Bind(tr.sunRaysFbo);
 
-		if(glRefConfig.occlusionQuery) {
-			tr.sunFlareQueryActive[tr.sunFlareQueryIndex] = true;
-			qglBeginQuery(glRefConfig.occlusionQueryTarget, tr.sunFlareQuery[tr.sunFlareQueryIndex]);
+			qglClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+			qglClear(GL_COLOR_BUFFER_BIT);
+
+			if(glRefConfig.occlusionQuery) {
+				tr.sunFlareQueryActive[tr.sunFlareQueryIndex] = true;
+				qglBeginQuery(glRefConfig.occlusionQueryTarget, tr.sunFlareQuery[tr.sunFlareQueryIndex]);
+			}
+
+			if(backEnd.viewParms.flags & VPF_SKYDRAWN) backEnd.skyRenderedThisView = true;
+
+			RB_DrawSun(r_sunRaysStrength->value, tr.sunShader);
+
+			if(glRefConfig.occlusionQuery) {
+				qglEndQuery(glRefConfig.occlusionQueryTarget);
+			}
+
+			FBO_Bind(oldFbo);
 		}
-
-		RB_DrawSun(r_sunRaysStrength->value, tr.sunShader);
-
-		if(glRefConfig.occlusionQuery) {
-			qglEndQuery(glRefConfig.occlusionQueryTarget);
-		}
-
-		FBO_Bind(oldFbo);
 	}
 
 	if(glRefConfig.framebufferObject && tr.renderCubeFbo && backEnd.viewParms.targetFbo == tr.renderCubeFbo) {

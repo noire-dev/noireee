@@ -64,8 +64,6 @@ cvar_t* r_toneMapMin;
 cvar_t* r_toneMapAvg;
 cvar_t* r_toneMapMax;
 
-cvar_t* r_skybox;
-
 cvar_t* r_sunRays;
 cvar_t* r_sunRaysStrength;
 cvar_t* r_sunSize;
@@ -96,6 +94,7 @@ cvar_t* r_jiggleMaxSpeed;
 cvar_t* r_reflectionsMaterials;
 cvar_t* r_reflectionsEntities;
 cvar_t* r_reflectionsSkybox;
+cvar_t* r_waterReflectionsSkybox;
 cvar_t* r_reflectionWater;
 cvar_t* r_reflectionWaterScale;
 cvar_t* r_reflectionWaterDistortion;
@@ -106,7 +105,6 @@ cvar_t* r_shadowUpdate;
 cvar_t* r_shadowResolution;
 cvar_t* r_shadowDistance;
 cvar_t* r_shadowFilter;
-cvar_t* r_shadowSkybox;
 
 cvar_t* r_fog;
 cvar_t* r_fogDensity;
@@ -115,6 +113,7 @@ cvar_t* r_fogColorG;
 cvar_t* r_fogColorB;
 cvar_t* r_fogStart;
 cvar_t* r_fogEnd;
+cvar_t* r_3dskybox;
 
 cvar_t* r_skyTopColor;
 cvar_t* r_skyBottomColor;
@@ -872,8 +871,6 @@ void R_Register(void) {
 	r_toneMapAvg = ri.Cvar_Get("r_toneMapAvg", "-2.48", CVAR_CHEAT);
 	r_toneMapMax = ri.Cvar_Get("r_toneMapMax", "-1.00", CVAR_CHEAT);
 
-	r_skybox = ri.Cvar_Get("r_skybox", "1", CVAR_ARCHIVE);
-
 	r_sunRays = ri.Cvar_Get("r_sunRays", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_sunRaysStrength = ri.Cvar_Get("r_sunRaysStrength", "0.64", CVAR_ARCHIVE);
 	r_sunSize = ri.Cvar_Get("r_sunSize", "0.53", CVAR_ARCHIVE);
@@ -899,6 +896,7 @@ void R_Register(void) {
 	r_reflectionsMaterials = ri.Cvar_Get("r_reflectionsMaterials", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_reflectionsEntities = ri.Cvar_Get("r_reflectionsEntities", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_reflectionsSkybox = ri.Cvar_Get("r_reflectionsSkybox", "0", CVAR_ARCHIVE);
+	r_waterReflectionsSkybox = ri.Cvar_Get("r_waterReflectionsSkybox", "1", CVAR_ARCHIVE);
 	r_reflectionWater = ri.Cvar_Get("r_reflectionWater", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_reflectionWaterScale = ri.Cvar_Get("r_reflectionWaterScale", "1.00", CVAR_ARCHIVE | CVAR_LATCH);
 	r_reflectionWaterDistortion = ri.Cvar_Get("r_reflectionWaterDistortion", "1024", CVAR_ARCHIVE);
@@ -917,7 +915,6 @@ void R_Register(void) {
 	r_shadowResolution = ri.Cvar_Get("r_shadowResolution", "1024", CVAR_ARCHIVE | CVAR_LATCH);
 	r_shadowDistance = ri.Cvar_Get("r_shadowDistance", "2048", CVAR_ARCHIVE | CVAR_LATCH);
 	r_shadowFilter = ri.Cvar_Get("r_shadowFilter", "1", CVAR_ARCHIVE | CVAR_LATCH);
-	r_shadowSkybox = ri.Cvar_Get("r_shadowSkybox", "0", CVAR_ARCHIVE);
 
 	r_fog = ri.Cvar_Get("r_fog", "1", CVAR_ARCHIVE);
 	r_fogDensity = ri.Cvar_Get("r_fogDensity", "1.0", CVAR_ARCHIVE);
@@ -926,6 +923,8 @@ void R_Register(void) {
 	r_fogColorB = ri.Cvar_Get("r_fogColorB", "0.5", CVAR_ARCHIVE);
 	r_fogStart = ri.Cvar_Get("r_fogStart", "4096", CVAR_ARCHIVE);
 	r_fogEnd = ri.Cvar_Get("r_fogEnd", "500000", CVAR_ARCHIVE);
+
+	r_3dskybox = ri.Cvar_Get("r_3dskybox", "1", CVAR_ARCHIVE);
 
 	// Procedural sky. RGB values are floating point, normally in the 0..1 range.
 	r_skyTopColor = ri.Cvar_Get("r_skyTopColor", "1.00 1.00 1.00", CVAR_ARCHIVE);
