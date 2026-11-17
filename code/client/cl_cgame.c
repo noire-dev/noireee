@@ -426,7 +426,6 @@ intptr_t CL_CgameSystemCalls(intptr_t* args) {
 		case CG_CIN_SETEXTENTS: CIN_SetExtents(args[1], args[2], args[3], args[4], args[5]); return 0;
 
 		case CG_GET_ENTITY_TOKEN: return re.GetEntityToken(VMA(1), args[2]);
-		case CG_R_INPVS: return re.inPVS(VMA(1), VMA(2));
 
 #include "../q_sharedsyscalls.inc"
 #include "../q_sharedsyscalls_client.inc"

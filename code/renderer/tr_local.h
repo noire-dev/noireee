@@ -63,7 +63,6 @@ typedef unsigned int vaoCacheGlIndex_t;
 
 #define MAX_FBOS 64
 #define MAX_RENDER_DLIGHTS (MAX_DLIGHTS * 8)  // aggregate backing storage for multiple views per frame
-#define MAX_VIEWS_PVS 2                       // слоты lockpvs: 0 — обычные камеры, 1 — проход 3D-скайбокса
 #define MAX_VAOS 4096
 
 typedef struct cubemap_s {
@@ -1700,12 +1699,7 @@ typedef struct {
 ** by the frontend.
 */
 typedef struct {
-	bool registered;  // cleared at shutdown, set at beginRegistration
-
-	// lockpvs: точка, по которой заморожен PVS, когда дизайнер включает r_lockpvs.
-	// Отдельный слот для прохода 3D-скайбокса — у него своя камера в мини-мире.
-	bool lockPvsValid[MAX_VIEWS_PVS];
-	vec3_t lockPvsOrigin[MAX_VIEWS_PVS];
+	bool registered;  // cleared at shutdown, set at beginRegistratio
 
 	int frameCount;  // incremented every frame
 	int sceneCount;  // incremented every scene
@@ -1930,9 +1924,6 @@ extern cvar_t* r_textureMode;
 
 extern cvar_t* r_showtris;  // enables wireframe rendering of the world
 
-extern cvar_t* r_pvs;
-extern cvar_t* r_lockpvs;
-
 extern cvar_t* r_subdivisions;
 
 extern cvar_t* r_externalGLSL;
@@ -1990,22 +1981,23 @@ extern cvar_t* r_fogStart;
 extern cvar_t* r_fogEnd;
 
 extern cvar_t* r_3dsky;
-extern cvar_t* r_occlusion;           // 1 = Hardware Occlusion Queries для func_occlusion / 3D-скайбокса / зеркал / воды
-extern cvar_t* r_occlusionAsync;      // 1 = не ждать GPU, читать результат запросов в следующем кадре
-extern cvar_t* r_portalRedrawSkybox;  // 1 = render destination 3D skybox for first-level portal views
 
-extern cvar_t* r_recursionCount;               // maximum nested portal/mirror views (0 disables them)
-extern cvar_t* r_planarReflections;            // 1 = planar reflections for flat shader surfaces marked `water`
-extern cvar_t* r_planarReflectionsScale;       // size of the reflection texture relative to the screen
-extern cvar_t* r_planarReflectionsDistortion;  // how strongly the normalmap distorts the reflection (world units)
-extern cvar_t* r_planarReflectionsSkybox;      // 3D skybox (мини-мир) в планарных отражениях воды (r_planarReflections)
+extern cvar_t* r_occlusion;
+extern cvar_t* r_occlusionAsync;
+
+extern cvar_t* r_portalRecursionCount;
+extern cvar_t* r_portalRedrawSkybox;
+
+extern cvar_t* r_planarReflections;
+extern cvar_t* r_planarReflectionsScale;
+extern cvar_t* r_planarReflectionsDistortion;
+extern cvar_t* r_planarReflectionsSkybox;
 
 extern cvar_t* r_dynamicLight;
 extern cvar_t* r_dynamicLightUpdate;
 extern cvar_t* r_dynamicLightResolution;
 extern cvar_t* r_dynamicLightCull;
 
-/* Procedural sky controls (surfaceparm sky; no skyparms required). */
 extern cvar_t* r_skyTopColor;
 extern cvar_t* r_skyBottomColor;
 extern cvar_t* r_skyFadeBias;
@@ -2344,7 +2336,6 @@ WORLD MAP
 
 void R_AddBrushModelSurfaces(trRefEntity_t* e);
 void R_AddWorldSurfaces(void);
-bool R_inPVS(const vec3_t p1, const vec3_t p2);
 
 /*
 ============================================================

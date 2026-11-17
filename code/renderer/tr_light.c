@@ -145,6 +145,8 @@ LIGHT SAMPLING
 extern cvar_t* r_ambientScale;
 extern cvar_t* r_directedScale;
 extern cvar_t* r_dlightScale;
+extern cvar_t* r_ambientSunFill;
+extern cvar_t* r_ambientFillLevel;
 
 /*
 =================
@@ -339,6 +341,17 @@ void R_SetupEntityLighting(const trRefdef_t* refdef, trRefEntity_t* ent) {
 		VectorClear(ent->ambientLight);
 		VectorClear(ent->directedLight);
 		VectorCopy(tr.sunDirection, ent->lightDir);
+	}
+
+	if(r_ambientSunFill && r_ambientSunFill->value > 0.0f && !(refdef->rdflags & RDF_NOWORLDMODEL)) {
+		float level = r_ambientFillLevel ? r_ambientFillLevel->value : 100.0f;
+		float dirLum = 0.299f * ent->directedLight[0] + 0.587f * ent->directedLight[1] + 0.114f * ent->directedLight[2];
+		float t = (level > 1.0f) ? Com_Clamp(0.0f, 1.0f, dirLum / level) : 1.0f;
+		float fill = r_ambientSunFill->value * t * t * (3.0f - 2.0f * t);  // smoothstep
+
+		ent->ambientLight[0] += ent->directedLight[0] * fill;
+		ent->ambientLight[1] += ent->directedLight[1] * fill;
+		ent->ambientLight[2] += ent->directedLight[2] * fill;
 	}
 
 	// Dynamic lights are added in the additive per-pixel pass. Keeping them

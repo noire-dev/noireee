@@ -91,7 +91,6 @@ typedef struct {
 
 	void (*RemapShader)(const char* oldShader, const char* newShader, const char* offsetTime);
 	bool (*GetEntityToken)(char* buffer, int size);
-	bool (*inPVS)(const vec3_t p1, const vec3_t p2);
 
 	void (*TakeVideoFrame)(int h, int w, byte* captureBuffer, byte* encodeBuffer, bool motionJpeg);
 	void (*AddPointLightToScene)(const vec3_t origin, float radius, const vec3_t color, float intensity, qhandle_t hShader, bool shadows);

@@ -1316,10 +1316,10 @@ bool R_PortalViewBySurface(drawSurf_t* drawSurf, int entityNum) {
 	int portalScissor[4];
 	int recursionLimit;
 
-	// r_recursionCount is the number of portal transitions allowed
+	// r_portalRecursionCount is the number of portal transitions allowed
 	// below the primary camera. Clamp it to keep malformed maps from causing
 	// unbounded recursive view generation.
-	recursionLimit = Com_Clamp(0, 8, r_recursionCount ? r_recursionCount->integer : 2);
+	recursionLimit = Com_Clamp(0, 8, r_portalRecursionCount ? r_portalRecursionCount->integer : 2);
 	if(tr.viewParms.portalRecursion >= recursionLimit) return false;
 
 	if(R_OcclusionPortalHidden(drawSurf->surface)) return false;
@@ -1553,7 +1553,7 @@ void R_SortDrawSurfs(drawSurf_t* drawSurfs, int numDrawSurfs) {
 		// Render every visible portal aperture, including self-reflecting ones. Each child view is
 		// restricted to that aperture's screen-space scissor, so later portals
 		// do not overwrite unrelated portal images. Nested views repeat this
-		// pass until r_recursionCount is reached.
+		// pass until r_portalRecursionCount is reached.
 		R_PortalViewBySurface((drawSurfs + i), entityNum);
 	}
 
@@ -1800,9 +1800,9 @@ void R_RenderWaterReflection(void) {
 	newParms.isPortal = true;     // oblique near-plane clipping
 	newParms.isReflected = true;  // reflected axes require reversed face culling
 	// Keep the historical behavior: water reflection views do not spawn a
-	// second tree of portal/mirror views. r_recursionCount is for real portal
+	// second tree of portal/mirror views. r_portalRecursionCount is for real portal
 	// and mirror apertures, not for this auxiliary reflection pass.
-	newParms.portalRecursion = Com_Clamp(0, 8, r_recursionCount ? r_recursionCount->integer : 2);
+	newParms.portalRecursion = Com_Clamp(0, 8, r_portalRecursionCount ? r_portalRecursionCount->integer : 2);
 	newParms.zFar = 0.0f;
 	newParms.flags &= ~(VPF_FARPLANEFRUSTUM | VPF_USESUNLIGHT | VPF_SKYDRAWN);
 	newParms.flags |= VPF_NOVIEWMODEL | VPF_WATERREFLECTION;

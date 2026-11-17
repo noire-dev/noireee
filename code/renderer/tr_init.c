@@ -107,11 +107,13 @@ cvar_t* r_fogStart;
 cvar_t* r_fogEnd;
 
 cvar_t* r_3dsky;
+
 cvar_t* r_occlusion;
 cvar_t* r_occlusionAsync;
+
+cvar_t* r_portalRecursionCount;
 cvar_t* r_portalRedrawSkybox;
 
-cvar_t* r_recursionCount;
 cvar_t* r_planarReflections;
 cvar_t* r_planarReflectionsScale;
 cvar_t* r_planarReflectionsDistortion;
@@ -160,7 +162,6 @@ cvar_t* r_swapInterval;
 cvar_t* r_textureMode;
 cvar_t* r_gamma;
 cvar_t* r_renderScale;
-cvar_t* r_lockpvs;
 
 cvar_t* r_subdivisions;
 
@@ -170,7 +171,9 @@ cvar_t* r_noborder;
 cvar_t* r_ambientScale;
 cvar_t* r_directedScale;
 cvar_t* r_dlightScale;
-cvar_t* r_pvs;
+cvar_t* r_ambientSunFill;
+cvar_t* r_ambientFillLevel;
+
 cvar_t* r_debugSort;
 
 int max_polys;
@@ -913,9 +916,9 @@ void R_Register(void) {
 
 	r_depthPrepass = ri.Cvar_Get("r_depthPrepass", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_shadows = ri.Cvar_Get("r_shadows", "1", CVAR_ARCHIVE | CVAR_LATCH);
-	r_shadowUpdate = ri.Cvar_Get("r_shadowUpdate", "0", CVAR_ARCHIVE);
+	r_shadowUpdate = ri.Cvar_Get("r_shadowUpdate", "3", CVAR_ARCHIVE);
 	r_shadowResolution = ri.Cvar_Get("r_shadowResolution", "1024", CVAR_ARCHIVE | CVAR_LATCH);
-	r_shadowDistance = ri.Cvar_Get("r_shadowDistance", "2048", CVAR_ARCHIVE | CVAR_LATCH);
+	r_shadowDistance = ri.Cvar_Get("r_shadowDistance", "8192", CVAR_ARCHIVE | CVAR_LATCH);
 	r_shadowFilter = ri.Cvar_Get("r_shadowFilter", "1", CVAR_ARCHIVE | CVAR_LATCH);
 
 	r_fog = ri.Cvar_Get("r_fog", "1", CVAR_ARCHIVE);
@@ -928,15 +931,15 @@ void R_Register(void) {
 
 	r_3dsky = ri.Cvar_Get("r_3dsky", "1", CVAR_ARCHIVE);
 
-	// Hardware Occlusion Queries (func_occlusion, 3D-скайбокс, зеркала, вода)
 	r_occlusion = ri.Cvar_Get("r_occlusion", "1", CVAR_ARCHIVE);
 	r_occlusionAsync = ri.Cvar_Get("r_occlusionAsync", "1", CVAR_ARCHIVE);
-	r_portalRedrawSkybox = ri.Cvar_Get("r_portalRedrawSkybox", "1", CVAR_ARCHIVE);
 
-	r_recursionCount = ri.Cvar_Get("r_recursionCount", "2", CVAR_ARCHIVE);
+	r_portalRecursionCount = ri.Cvar_Get("r_portalRecursionCount", "1", CVAR_ARCHIVE);
+	r_portalRedrawSkybox = ri.Cvar_Get("r_portalRedrawSkybox", "0", CVAR_ARCHIVE);
+
 	r_planarReflections = ri.Cvar_Get("r_planarReflections", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_planarReflectionsScale = ri.Cvar_Get("r_planarReflectionsScale", "1.00", CVAR_ARCHIVE | CVAR_LATCH);
-	r_planarReflectionsDistortion = ri.Cvar_Get("r_planarReflectionsDistortion", "1024", CVAR_ARCHIVE);
+	r_planarReflectionsDistortion = ri.Cvar_Get("r_planarReflectionsDistortion", "2048", CVAR_ARCHIVE);
 	r_planarReflectionsSkybox = ri.Cvar_Get("r_planarReflectionsSkybox", "1", CVAR_ARCHIVE);
 
 	r_dynamicLight = ri.Cvar_Get("r_dynamicLight", "2", CVAR_ARCHIVE | CVAR_LATCH);
@@ -944,7 +947,6 @@ void R_Register(void) {
 	r_dynamicLightCull = ri.Cvar_Get("r_dynamicLightCull", "1", CVAR_ARCHIVE);
 	r_dynamicLightResolution = ri.Cvar_Get("r_dynamicLightResolution", "128", CVAR_ARCHIVE | CVAR_LATCH);
 
-	// Procedural sky. RGB values are floating point, normally in the 0..1 range.
 	r_skyTopColor = ri.Cvar_Get("r_skyTopColor", "1.00 1.00 1.00", CVAR_ARCHIVE);
 	r_skyBottomColor = ri.Cvar_Get("r_skyBottomColor", "1.00 1.00 1.00", CVAR_ARCHIVE);
 	r_skyFadeBias = ri.Cvar_Get("r_skyFadeBias", "1.0", CVAR_ARCHIVE);
@@ -987,15 +989,14 @@ void R_Register(void) {
 	r_ambientScale = ri.Cvar_Get("r_ambientScale", "0.72", CVAR_CHEAT);
 	r_directedScale = ri.Cvar_Get("r_directedScale", "0.92", CVAR_CHEAT);
 	r_dlightScale = ri.Cvar_Get("r_dlightScale", "12.0", CVAR_ARCHIVE);
-
-	r_pvs = ri.Cvar_Get("r_pvs", "0", CVAR_ARCHIVE);
+	r_ambientSunFill = ri.Cvar_Get("r_ambientSunFill", "0.64", CVAR_ARCHIVE);
+	r_ambientFillLevel = ri.Cvar_Get("r_ambientFillLevel", "100", CVAR_ARCHIVE);
 
 	// temporary variables that can change at any time
 	r_debugSort = ri.Cvar_Get("r_debugSort", "0", CVAR_CHEAT);
 	r_ignore = ri.Cvar_Get("r_ignore", "1", CVAR_CHEAT);
 	r_speeds = ri.Cvar_Get("r_speeds", "0", CVAR_CHEAT);
 	r_showtris = ri.Cvar_Get("r_showtris", "0", CVAR_CHEAT);
-	r_lockpvs = ri.Cvar_Get("r_lockpvs", "0", CVAR_CHEAT);
 
 	// make sure all the commands added here are also
 	// removed in R_Shutdown
@@ -1239,7 +1240,6 @@ refexport_t* GetRefAPI(int apiVersion, refimport_t* rimp) {
 
 	re.RemapShader = R_RemapShader;
 	re.GetEntityToken = R_GetEntityToken;
-	re.inPVS = R_inPVS;
 
 	re.TakeVideoFrame = RE_TakeVideoFrame;
 
