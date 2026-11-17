@@ -241,6 +241,9 @@ void RE_BeginFrame(void) {
 	tr.frameCount++;
 	tr.frameSceneNum = 0;
 
+	// func_occlusion: результаты запросов прошлого кадра -> маски скрытых групп
+	R_OcclusionBeginFrame();
+
 	//
 	// texturemode stuff
 	//

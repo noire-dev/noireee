@@ -814,7 +814,7 @@ static void R_SetupFrustumFromProjection(viewParms_t* dest) {
 		 */
 		VectorClear(normal);
 		VectorMA(normal, -clipPlanes[i][0], dest->or.axis[1], normal);
-		VectorMA(normal,  clipPlanes[i][1], dest->or.axis[2], normal);
+		VectorMA(normal, clipPlanes[i][1], dest->or.axis[2], normal);
 		VectorMA(normal, -clipPlanes[i][2], dest->or.axis[0], normal);
 		dist = DotProduct(normal, dest->or.origin) - clipPlanes[i][3];
 
@@ -1388,6 +1388,10 @@ bool R_MirrorViewBySurface(drawSurf_t* drawSurf, int entityNum) {
 	recursionLimit = Com_Clamp(0, 8, r_recursionCount ? r_recursionCount->integer : 2);
 	if(tr.viewParms.portalRecursion >= recursionLimit) return false;
 
+	// func_occlusion: зеркало мира, которого не видно (оклюзия прошлого кадра), — целый
+	// лишний вид сцены не строим. Сама поверхность рисуется как обычно.
+	if(entityNum == REFENTITYNUM_WORLD && R_OcclusionMirrorHidden(drawSurf->surface)) return false;
+
 	// trivially reject portal/mirror
 	if(SurfIsOffscreen(drawSurf, portalScissor)) {
 		return false;
@@ -1785,6 +1789,9 @@ void R_NoteWaterSurface(const msurface_t* surf) {
 
 	if(!r_planarReflections->integer || !tr.waterReflectionFbo || !surf->isWaterPlane) return;
 
+	// func_occlusion: воды не видно — не выбираем её для планарного отражения (лишний вид сцены)
+	if(R_OcclusionWaterHidden(surf)) return;
+
 	// Only the primary view may choose a reflection plane. Do not recurse into
 	// portals, mirrors, cubemaps, or shadow passes.
 	if(tr.viewParms.isPortal || (tr.viewParms.flags & (VPF_CUBEMAP | VPF_WATERREFLECTION | VPF_SHADOWMAPS | VPF_DEPTHSHADOW | VPF_DLIGHTSHADOW)) || (tr.refdef.rdflags & RDF_NOWORLDMODEL)) return;
@@ -1823,8 +1830,10 @@ void R_NoteWaterSurface(const msurface_t* surf) {
 	// world and inline-brush water participate in the same nearest-plane choice.
 	for(i = 0; i < 3; i++) {
 		float d = 0.0f;
-		if(origin[i] < bounds[0][i]) d = bounds[0][i] - origin[i];
-		else if(origin[i] > bounds[1][i]) d = origin[i] - bounds[1][i];
+		if(origin[i] < bounds[0][i])
+			d = bounds[0][i] - origin[i];
+		else if(origin[i] > bounds[1][i])
+			d = origin[i] - bounds[1][i];
 		distSq += d * d;
 	}
 
@@ -1919,13 +1928,27 @@ void R_RenderWaterReflection(void) {
 
 /*
 ================
+R_OcclusionPrimaryView
+
+Основной вид игрока: не портал/зеркало, не отражение воды, не кубмапа, не тени, не проход
+3D-скайбокса и сцена с миром (а не 2D/viewmodel-сцена).
+================
+*/
+static bool R_OcclusionPrimaryView(const viewParms_t* parms) {
+	if(parms->isPortal || parms->portalRecursion > 0) return false;
+	if(parms->flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW | VPF_DLIGHTSHADOW | VPF_CUBEMAP | VPF_WATERREFLECTION | VPF_SKYBOX3D)) return false;
+	if(tr.refdef.rdflags & RDF_NOWORLDMODEL) return false;
+	return true;
+}
+
+/*
+================
 R_SetupVolumeRules
 
 Правила видимости объёмов для ОДНОЙ камеры (применяет R_AddWorldSurface).
 
 По умолчанию каждая камера получает правила сцены из RE_BeginScene:
-  - вне func_display — worldspawn "volumeflags" (blacklist; по умолчанию
-    VOLUME_SKY — мир не рисует поверхности 3D-скайбокса);
+  - вне func_display — worldspawn "volumeflags" (blacklist; по умолчанию VOLUME_SKY — мир не рисует поверхности 3D-скайбокса);
   - внутри func_display — его spawnflags (blacklist) или whitelist.
 
 Единственное исключение — проход 3D-скайбокса (VPF_SKYBOX3D): он рендерится
@@ -1940,11 +1963,17 @@ static void R_SetupVolumeRules(viewParms_t* parms) {
 	parms->volumeShowOnly = tr.volumeShowOnly;
 	parms->volumeShowFlags = tr.volumeShowFlags;
 
-	if(parms->flags & VPF_SKYBOX3D) {
-		// 3D-скайбокс: СТРОГО только группа неба (~VOLUME_SKY = 0xFFFFFFFD)
+	if(parms->flags & VPF_SKYBOX3D) {  // 3D-скайбокс: СТРОГО только группа неба (~VOLUME_SKY = 0xFFFFFFFD)
 		parms->volumeFlags = ~VOLUME_SKY;
 		parms->volumeShowOnly = false;
 		parms->volumeShowFlags = 0;
+	}
+
+	parms->occlusionHidden = 0;
+	parms->flags &= ~VPF_OCCLUSIONTEST;
+	if(tr.occlusion.active && R_OcclusionPrimaryView(parms)) {
+		parms->occlusionHidden = tr.occlusion.hiddenMask;
+		parms->flags |= VPF_OCCLUSIONTEST;
 	}
 }
 

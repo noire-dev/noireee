@@ -1167,7 +1167,16 @@ void RE_RenderScene(const refdef_t* fd) {
 	 * Скайбокс рисуется до постобработки и вместе с миром, так что
 	 * bloom/тонемап/sun rays работают как обычно.
 	 */
-	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && !(fd->rdflags & RDF_NOWORLDMODEL)) {
+	/*
+	 * func_occlusion: небо проверяется ПЕРВЫМ. Если ни одна небесная поверхность не видна
+	 * (оклюзия прошлого кадра), весь проход 1 пропускается; основной вид тогда рисуется
+	 * как при r_3dsky 0 (VPF_SKYSKIPPED): обычный купол вместо картинки прохода 1.
+	 */
+	if(tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && !(fd->rdflags & RDF_NOWORLDMODEL) &&
+	   R_OcclusionSkyHidden() && !R_PointInSkyGroupVolume(tr.world, fd->vieworg)) {
+		// (игрок внутри коробки скайбокса — проход 1 и есть вся картинка, его пропускать нельзя)
+		parms.flags |= VPF_SKYSKIPPED;
+	} else if(tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && !(fd->rdflags & RDF_NOWORLDMODEL)) {
 		viewParms_t skyParms = parms;
 
 		/*

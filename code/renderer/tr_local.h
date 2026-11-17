@@ -63,7 +63,7 @@ typedef unsigned int vaoCacheGlIndex_t;
 
 #define MAX_FBOS 64
 #define MAX_RENDER_DLIGHTS (MAX_DLIGHTS * 8)  // aggregate backing storage for multiple views per frame
-#define MAX_VIEWS_PVS 2  // слоты lockpvs: 0 — обычные камеры, 1 — проход 3D-скайбокса
+#define MAX_VIEWS_PVS 2                       // слоты lockpvs: 0 — обычные камеры, 1 — проход 3D-скайбокса
 #define MAX_VAOS 4096
 
 typedef struct cubemap_s {
@@ -902,21 +902,24 @@ typedef enum {
 	VPF_WATERREFLECTION = 0x200,
 	VPF_SKYBOX3D = 0x400,
 	VPF_SKYDRAWN = 0x800,
-	VPF_KEEPCOLOR = 0x1000
+	VPF_KEEPCOLOR = 0x1000,
+	VPF_OCCLUSIONTEST = 0x2000,  // основной вид игрока: фильтр func_occlusion применён, бэкенд ставит occlusion queries
+	VPF_SKYSKIPPED = 0x4000      // проход 1 3D-скайбокса пропущен оклюзией: основной вид рисуется как при r_3dsky 0
 } viewParmFlags_t;
 
 typedef struct {
 	orientationr_t or ;
 	orientationr_t world;
-	vec3_t pvsOrigin;  // may be different than or.origin for portals
-	bool isPortal;     // true if this view is through a portal or mirror
-	bool isMirror;     // the portal is a mirror, invert the face culling
-	int portalRecursion; // number of portal/mirror transitions from the primary view
+	vec3_t pvsOrigin;     // may be different than or.origin for portals
+	bool isPortal;        // true if this view is through a portal or mirror
+	bool isMirror;        // the portal is a mirror, invert the face culling
+	int portalRecursion;  // number of portal/mirror transitions from the primary view
 	viewParmFlags_t flags;
 
 	unsigned volumeFlags;
 	bool volumeShowOnly;
 	unsigned volumeShowFlags;
+	uint64_t occlusionHidden;      // func_occlusion: биты групп, скрытых оклюзией (только основной вид игрока, иначе 0)
 	int frameSceneNum;             // copied from tr.frameSceneNum
 	int frameCount;                // copied from tr.frameCount
 	cplane_t portalPlane;          // clip anything behind this if mirroring
@@ -1219,13 +1222,15 @@ typedef struct msurface_s {
 	int fogIndex;
 	int surfaceFlags;
 	bool hasFog;
-	unsigned volumeFlags;  // группы объёмов, к которым принадлежит поверхность: базовая (VOLUME_WORLD / VOLUME_SKY) + func_volume spawnflags; КОПИЯ неба (мини-мир 3D-скайбокса) несёт РОВНО VOLUME_SKY
+	uint64_t occlusionMask;  // func_occlusion: биты групп, внутри которых поверхность лежит целиком (0 = вне групп, рисуется всегда)
+	int occlusionSlot;       // индекс в world_t.occSpecial* для зеркал/воды мира, иначе -1
+	unsigned volumeFlags;    // группы объёмов, к которым принадлежит поверхность: базовая (VOLUME_WORLD / VOLUME_SKY) + func_volume spawnflags; КОПИЯ неба (мини-мир 3D-скайбокса) несёт РОВНО VOLUME_SKY
 	bool useCubemap;
 	vec3_t cubemapOrigin;
 	float cubemapBound;
-	bool isWaterPlane;   // flat surface marked with the shader keyword `water`
-	cplane_t waterPlane; // local plane; transformed by the current brush-entity orientation
-	vec3_t waterCenter; // center of the surface bounds, projected onto waterPlane
+	bool isWaterPlane;    // flat surface marked with the shader keyword `water`
+	cplane_t waterPlane;  // local plane; transformed by the current brush-entity orientation
+	vec3_t waterCenter;   // center of the surface bounds, projected onto waterPlane
 	cullinfo_t cullinfo;
 
 	surfaceType_t* data;  // any of srf*_t
@@ -1235,9 +1240,9 @@ typedef struct msurface_s {
 typedef struct mnode_s {
 	// common with leaf and node
 	bool isLeaf;
-	int contents;         // -1 for nodes, to differentiate from leafs
-	bool hasSkySurface;   // лист содержит SURF_SKY — не вырезается PVS/areamask (небо — фон кадра)
-	vec3_t mins, maxs;    // for bounding box culling
+	int contents;        // -1 for nodes, to differentiate from leafs
+	bool hasSkySurface;  // лист содержит SURF_SKY — не вырезается PVS/areamask (небо — фон кадра)
+	vec3_t mins, maxs;   // for bounding box culling
 	vec3_t surfMins, surfMaxs;
 	struct mnode_s* parent;
 
@@ -1259,8 +1264,61 @@ typedef struct {
 	int numSurfaces;
 	int firstBrush;
 	int numBrushes;
-	vec3_t (*brushBounds)[2]; // bounds for each collision brush in this inline model
+	vec3_t (*brushBounds)[2];  // bounds for each collision brush in this inline model
 } bmodel_t;
+
+/*
+ * Hardware Occlusion Queries (func_occlusion).
+ *
+ * Каждый func_occlusion = одна группа = один бит 64-битной маски (бит 0 — первый func_occlusion
+ * в энтити-лампе, бит 1 — второй, ...). Один func_occlusion может состоять из нескольких brush —
+ * все его AABB входят в ОДНУ группу и проверяются ОДНИМ запросом.
+ * Поверхности мира, ЦЕЛИКОМ лежащие внутри хотя бы одного brush группы, получают её бит
+ * в msurface_t.occlusionMask (частичное пересечение бит не даёт). Поверхность скрыта, только если скрыты ВСЕ её группы.
+ *
+ * Объекты запросов (порядок проверки в кадре — именно такой):
+ *   OCC_OBJ_SKY      — AABB небесных поверхностей: нет видимого неба = пропускаем весь проход 3D-скайбокса
+ *   OCC_OBJ_GROUP0+g — группы func_occlusion
+ *   OCC_OBJ_SPECIAL0+n — отдельные зеркала и вода на мировых поверхностях, которые не отсёк ни один AABB группы
+ */
+#define OCC_MAX_GROUPS 64
+#define OCC_MAX_SPECIAL 128
+#define OCC_MAX_SKY_BOXES 1024
+#define OCC_MAX_BOXES 8000  // 8 вершин на бокс, glIndex_t 16-битный: 8000 * 8 < 65536
+#define OCC_QUERY_SLOTS 2   // кольцо запросов: результат кадра N читается в кадре N+1 без ожидания
+#define OCC_KEEP_FRAMES 2   // гистерезис: объект скрывается только после OCC_KEEP_FRAMES+1 подряд "не виден"
+#define OCC_BOX_PAD 2.0f    // запас вокруг AABB неба/зеркал/воды (плоские поверхности z-fight'ятся сами с собой)
+#define OCC_GROUP_PAD 4.0f  // запас вокруг AABB групп только при рисовании запроса
+
+#define OCC_OBJ_SKY 0
+#define OCC_OBJ_GROUP0 1
+#define OCC_OBJ_SPECIAL0 (OCC_OBJ_GROUP0 + OCC_MAX_GROUPS)
+#define OCC_NUM_OBJECTS (OCC_OBJ_SPECIAL0 + OCC_MAX_SPECIAL)
+
+typedef struct occRange_s {
+	int firstBox, numBoxes;      // диапазон в world_t.occBoxes
+	int firstIndex, numIndexes;  // диапазон индексов в VAO боксов (36 индексов на бокс)
+} occRange_t;
+
+typedef struct occlusionState_s {
+	bool queriesReady;  // query-объекты созданы (R_InitQueries)
+	bool active;        // r_occlusion включён и карта содержит данные оклюзии
+	int nextSlot;
+	int lastIssueFrame;
+
+	uint64_t hiddenMask;  // скрытые группы (результат последних доступных запросов)
+	bool skyHidden;
+	byte specialHidden[OCC_MAX_SPECIAL];
+
+	byte keep[OCC_NUM_OBJECTS];       // обратный отсчёт видимости; 0 = скрыт
+	int stateFrame[OCC_NUM_OBJECTS];  // кадр, на который состояние объекта актуально
+
+	GLuint queries[OCC_QUERY_SLOTS][OCC_NUM_OBJECTS];
+	bool slotPending[OCC_QUERY_SLOTS];
+	int slotFrame[OCC_QUERY_SLOTS];
+	int slotLast[OCC_QUERY_SLOTS];  // последний выданный объект слота (запросы завершаются по порядку)
+	byte slotIssued[OCC_QUERY_SLOTS][OCC_NUM_OBJECTS];
+} occlusionState_t;
 
 typedef struct volumeInfo_s {
 	vec3_t bounds[2];
@@ -1282,13 +1340,13 @@ typedef struct displayInfo_s {
  */
 typedef struct portalInfo_s {
 	bool isInput;
-	int modelIndex;       // BSP submodel index (*N)
-	int modelHandle;      // renderer model handle for the inline brush model
-	int targetIndex;      // paired func_portal_out index, or -1 when invalid
+	int modelIndex;   // BSP submodel index (*N)
+	int modelHandle;  // renderer model handle for the inline brush model
+	int targetIndex;  // paired func_portal_out index, or -1 when invalid
 	vec3_t origin;
-	vec3_t angles;        // brush-model orientation
-	vec3_t localOrigin;   // exact center of the portal shader face in brush-local coordinates
-	vec3_t localNormal;   // inward normal: from portal face toward the brush center
+	vec3_t angles;       // brush-model orientation
+	vec3_t localOrigin;  // exact center of the portal shader face in brush-local coordinates
+	vec3_t localNormal;  // inward normal: from portal face toward the brush center
 	char targetName[64];
 	char target[64];
 } portalInfo_t;
@@ -1337,6 +1395,17 @@ typedef struct {
 	displayInfo_t* displays;
 	int numPortals;
 	portalInfo_t* portals;
+
+	// func_occlusion (Hardware Occlusion Queries)
+	int numOccBoxes;
+	vec3_t (*occBoxes)[2];  // все AABB: группы, затем небо, затем зеркала/вода
+	int numOccGroups;
+	occRange_t occGroups[OCC_MAX_GROUPS];  // группа g = бит (1 << g)
+	occRange_t occSky;                     // небесные поверхности (только при 3D-скайбоксе)
+	int numOccSpecial;
+	occRange_t occSpecial[OCC_MAX_SPECIAL];
+	struct msurface_s* occSpecialSurf[OCC_MAX_SPECIAL];
+	vao_t* occVao;  // боксы в мировых координатах, одна VAO на карту
 
 	// базовая маска объёмов из worldspawn ("volumeflags"), активна, когда игрок
 	// не находится ни в одном display-объёме; по умолчанию VOLUME_SKY
@@ -1719,7 +1788,7 @@ typedef struct {
 	// "volumeflags" (по умолчанию VOLUME_SKY — вне display скрыта КОПИЯ неба,
 	// см. VOLUME_SKY); внутри func_display — его spawnflags.
 	unsigned volumeFlags;
-	bool hideSky;          // active func_display can suppress sky surfaces and the 3D skybox
+	bool hideSky;  // active func_display can suppress sky surfaces and the 3D skybox
 
 	// func_display whitelist: РИСУЙ ТОЛЬКО поверхности, чьи volumeFlags
 	// пересекаются с volumeShowFlags; всё остальное скрывается.
@@ -1738,6 +1807,7 @@ typedef struct {
 	//
 	shaderProgram_t genericShader[GENERICDEF_COUNT];
 	shaderProgram_t textureColorShader;
+	shaderProgram_t occlusionShader;  // только позиция, цвет не пишется: боксы func_occlusion
 	shaderProgram_t fogShader[FOGDEF_COUNT];
 	shaderProgram_t lightallShader[LIGHTDEF_COUNT];
 	shaderProgram_t shadowmapShader[SHADOWMAPDEF_COUNT];
@@ -1811,6 +1881,8 @@ typedef struct {
 	GLuint sunFlareQuery[2];
 	int sunFlareQueryIndex;
 	bool sunFlareQueryActive[2];
+
+	occlusionState_t occlusion;  // func_occlusion
 
 	// per-entity bone scale overrides, requested from cgame with
 	// RE_SetBoneScale and attached to the next added ref entity
@@ -1918,7 +1990,9 @@ extern cvar_t* r_fogStart;
 extern cvar_t* r_fogEnd;
 
 extern cvar_t* r_3dsky;
-extern cvar_t* r_portalRedrawSkybox;           // 1 = render destination 3D skybox for first-level portal views
+extern cvar_t* r_occlusion;           // 1 = Hardware Occlusion Queries для func_occlusion / 3D-скайбокса / зеркал / воды
+extern cvar_t* r_occlusionAsync;      // 1 = не ждать GPU, читать результат запросов в следующем кадре
+extern cvar_t* r_portalRedrawSkybox;  // 1 = render destination 3D skybox for first-level portal views
 
 extern cvar_t* r_recursionCount;               // maximum nested portal/mirror views (0 disables them)
 extern cvar_t* r_planarReflections;            // 1 = planar reflections for flat shader surfaces marked `water`
@@ -2011,6 +2085,15 @@ void R_RenderView(viewParms_t* parms);
 void R_AddMapPortalEntities(void);
 void R_RenderWaterReflection(void);
 void R_NoteWaterSurface(const msurface_t* surf);
+
+// func_occlusion
+void R_LoadOcclusionSystem(void);                            // tr_bsp.c: группы, маски поверхностей, VAO боксов
+void R_OcclusionResetState(void);                            // всё считается видимым, ждущие запросы сброшены
+void R_OcclusionBeginFrame(void);                            // начало кадра: чтение результатов, обновление масок
+void RB_OcclusionTest(void);                                 // бэкенд: запросы по AABB после отрисовки мира
+bool R_OcclusionSkyHidden(void);                             // 3D-скайбокс не виден — пропустить проход 1
+bool R_OcclusionMirrorHidden(const surfaceType_t* surface);  // зеркало/портал мира скрыт — не рисовать вид
+bool R_OcclusionWaterHidden(const msurface_t* surf);         // вода скрыта — не строить планарное отражение
 void R_RenderDlightCubemaps(const refdef_t* fd);
 void R_RenderSunShadowMaps(const refdef_t* fd, int level);
 void R_RenderCubemapSide(int cubemapSide, bool subscene);

@@ -1432,13 +1432,11 @@ model bounds keeps disconnected brushes in func_volume and func_display as
 separate regions.
 =================
 */
-static bool R_BuildBrushBounds(const dbrush_t* brushes, int brushCount,
-                               const dbrushside_t* sides, int sideCount,
-                               int brushIndex, vec3_t bounds[2]) {
+static bool R_BuildBrushBounds(const dbrush_t* brushes, int brushCount, const dbrushside_t* sides, int sideCount, int brushIndex, vec3_t bounds[2]) {
 	const dbrush_t* brush;
 	int firstSide, numSides, i, axis;
-	bool haveMin[3] = { false, false, false };
-	bool haveMax[3] = { false, false, false };
+	bool haveMin[3] = {false, false, false};
+	bool haveMax[3] = {false, false, false};
 
 	if(brushIndex < 0 || brushIndex >= brushCount) return false;
 	brush = &brushes[brushIndex];
@@ -1464,9 +1462,7 @@ static bool R_BuildBrushBounds(const dbrush_t* brushes, int brushCount,
 			int other1 = (axis + 1) % 3;
 			int other2 = (axis + 2) % 3;
 			float normal = plane->normal[axis];
-			if((normal < 0.999f && normal > -0.999f) ||
-			   plane->normal[other1] < -0.001f || plane->normal[other1] > 0.001f ||
-			   plane->normal[other2] < -0.001f || plane->normal[other2] > 0.001f) continue;
+			if((normal < 0.999f && normal > -0.999f) || plane->normal[other1] < -0.001f || plane->normal[other1] > 0.001f || plane->normal[other2] < -0.001f || plane->normal[other2] > 0.001f) continue;
 			coord = plane->dist / normal;
 			if(normal > 0.0f) {
 				if(coord < bounds[1][axis]) bounds[1][axis] = coord;
@@ -2164,9 +2160,12 @@ static void R_ParseEntityAngles(int numKeys, char keys[MAX_MAP_ENTITY_KEYS][MAX_
 	if(!v) return;
 
 	// Quake map convention: `angle` is yaw; -1 / -2 are up / down.
-	if(atof(v) == -1.0f) angles[0] = -90.0f;
-	else if(atof(v) == -2.0f) angles[0] = 90.0f;
-	else angles[1] = atof(v);
+	if(atof(v) == -1.0f)
+		angles[0] = -90.0f;
+	else if(atof(v) == -2.0f)
+		angles[0] = 90.0f;
+	else
+		angles[1] = atof(v);
 }
 
 static int R_FindInlineModelHandle(int modelIndex) {
@@ -2322,8 +2321,10 @@ static bool R_GetPortalFaceForModel(int modelIndex, portalInfo_t* portal) {
 		// vertices into this point: for a portal-only draw model that collapses
 		// the center onto the very plane whose side we are trying to determine.
 		hasOtherFacesCenter = R_GetPortalInteriorPointFromOtherFaces(bmodel, i, otherFacesCenter);
-		if(hasOtherFacesCenter) VectorSubtract(otherFacesCenter, faceCenter, faceToBrush);
-		else VectorSubtract(boundsCenter, faceCenter, faceToBrush);
+		if(hasOtherFacesCenter)
+			VectorSubtract(otherFacesCenter, faceCenter, faceToBrush);
+		else
+			VectorSubtract(boundsCenter, faceCenter, faceToBrush);
 		side = DotProduct(faceToBrush, planeNormal);
 
 		// The other-face witness can be ambiguous for multi-brush models. Fall
@@ -2339,8 +2340,10 @@ static bool R_GetPortalFaceForModel(int modelIndex, portalInfo_t* portal) {
 
 		// localNormal points into the brush, from the portal face toward the
 		// interior witness selected above.
-		if(side < 0.0f) VectorScale(planeNormal, -1.0f, portal->localNormal);
-		else VectorCopy(planeNormal, portal->localNormal);
+		if(side < 0.0f)
+			VectorScale(planeNormal, -1.0f, portal->localNormal);
+		else
+			VectorCopy(planeNormal, portal->localNormal);
 		VectorCopy(faceCenter, portal->localOrigin);
 		return true;
 	}
@@ -2677,14 +2680,12 @@ Separating-axis test for one axis of a triangle against an AABB. The triangle
 vertices are already translated so the box center is at the origin.
 =================
 */
-static bool R_TriangleBoxOverlapAxis(const vec3_t axis, const vec3_t v0,
-                                     const vec3_t v1, const vec3_t v2,
-                                     const vec3_t halfSize) {
+static bool R_TriangleBoxOverlapAxis(const vec3_t axis, const vec3_t v0, const vec3_t v1, const vec3_t v2, const vec3_t halfSize) {
 	float p0, p1, p2, minProjection, maxProjection;
 	float radius, axisLengthSquared;
 
 	axisLengthSquared = DotProduct(axis, axis);
-	if(axisLengthSquared <= 1.0e-12f) return true; // параллельные/нулевые оси не разделяют фигуры
+	if(axisLengthSquared <= 1.0e-12f) return true;  // параллельные/нулевые оси не разделяют фигуры
 
 	p0 = DotProduct(v0, axis);
 	p1 = DotProduct(v1, axis);
@@ -2692,9 +2693,7 @@ static bool R_TriangleBoxOverlapAxis(const vec3_t axis, const vec3_t v0,
 	minProjection = MIN(p0, MIN(p1, p2));
 	maxProjection = MAX(p0, MAX(p1, p2));
 
-	radius = halfSize[0] * (float)fabs(axis[0]) +
-	         halfSize[1] * (float)fabs(axis[1]) +
-	         halfSize[2] * (float)fabs(axis[2]);
+	radius = halfSize[0] * (float)fabs(axis[0]) + halfSize[1] * (float)fabs(axis[1]) + halfSize[2] * (float)fabs(axis[2]);
 	// Маленький допуск сохраняет касающиеся границы поверхности и объёма.
 	radius += 0.01f * (float)sqrt(axisLengthSquared);
 
@@ -2709,8 +2708,7 @@ Exact triangle-vs-AABB overlap using the 13 separating axes: 3 box axes,
 triangle normal, and 9 edge/box-axis cross products.
 =================
 */
-static bool R_TriangleIntersectsVolumeBounds(const vec3_t a, const vec3_t b,
-                                             const vec3_t c, const vec3_t bounds[2]) {
+static bool R_TriangleIntersectsVolumeBounds(const vec3_t a, const vec3_t b, const vec3_t c, const vec3_t bounds[2]) {
 	vec3_t center, halfSize, v0, v1, v2;
 	vec3_t edges[3], axis, boxAxis;
 	int i, j;
@@ -2761,9 +2759,7 @@ would incorrectly include diagonal surfaces whose bounds overlap the volume
 while the surface itself misses it.
 =================
 */
-static bool R_SurfaceIntersectsVolumeBounds(const srfBspSurface_t* bsp,
-                                            const vec3_t surfaceBounds[2],
-                                            const vec3_t volumeBounds[2]) {
+static bool R_SurfaceIntersectsVolumeBounds(const srfBspSurface_t* bsp, const vec3_t surfaceBounds[2], const vec3_t volumeBounds[2]) {
 	int i;
 	bool testedTriangle = false;
 
@@ -2773,14 +2769,10 @@ static bool R_SurfaceIntersectsVolumeBounds(const srfBspSurface_t* bsp,
 			int i1 = bsp->indexes[i + 1];
 			int i2 = bsp->indexes[i + 2];
 
-			if(i0 < 0 || i1 < 0 || i2 < 0 ||
-			   i0 >= bsp->numVerts || i1 >= bsp->numVerts || i2 >= bsp->numVerts) continue;
+			if(i0 < 0 || i1 < 0 || i2 < 0 || i0 >= bsp->numVerts || i1 >= bsp->numVerts || i2 >= bsp->numVerts) continue;
 
 			testedTriangle = true;
-			if(R_TriangleIntersectsVolumeBounds(bsp->verts[i0].xyz,
-			                                   bsp->verts[i1].xyz,
-			                                   bsp->verts[i2].xyz,
-			                                   volumeBounds)) return true;
+			if(R_TriangleIntersectsVolumeBounds(bsp->verts[i0].xyz, bsp->verts[i1].xyz, bsp->verts[i2].xyz, volumeBounds)) return true;
 		}
 	}
 
@@ -2789,8 +2781,7 @@ static bool R_SurfaceIntersectsVolumeBounds(const srfBspSurface_t* bsp,
 	// Редкий fallback для поверхностей без пригодных треугольных индексов:
 	// используем пересечение их bounds, а не требуем попадания всех вершин.
 	for(i = 0; i < 3; i++) {
-		if(surfaceBounds[1][i] < volumeBounds[0][i] ||
-		   surfaceBounds[0][i] > volumeBounds[1][i]) return false;
+		if(surfaceBounds[1][i] < volumeBounds[0][i] || surfaceBounds[0][i] > volumeBounds[1][i]) return false;
 	}
 	return true;
 }
@@ -2803,8 +2794,7 @@ Legacy func_volume behavior: every surface vertex must be contained by the
 volume. Used only when the entity has "addIfFull" "1".
 =================
 */
-static bool R_SurfaceFullyInsideVolumeBounds(const srfBspSurface_t* bsp,
-                                             const vec3_t volumeBounds[2]) {
+static bool R_SurfaceFullyInsideVolumeBounds(const srfBspSurface_t* bsp, const vec3_t volumeBounds[2]) {
 	int i;
 	if(!bsp || !bsp->verts || bsp->numVerts <= 0) return false;
 	for(i = 0; i < bsp->numVerts; i++) {
@@ -3032,6 +3022,281 @@ void R_CalcVertexLightDirs(void) {
 			default: break;
 		}
 	}
+}
+
+/*
+=================
+R_OcclusionSurfaceBounds
+
+AABB поверхности по её вершинам. cullinfo.bounds годится не для всех типов
+(он валиден только при CULLINFO_BOX), поэтому считаем сами — один раз на загрузке.
+=================
+*/
+static bool R_OcclusionSurfaceBounds(const msurface_t* surf, vec3_t bounds[2]) {
+	const srfBspSurface_t* bsp;
+	int i;
+
+	if(!surf->data) return false;
+	if(*surf->data != SF_FACE && *surf->data != SF_GRID && *surf->data != SF_TRIANGLES) return false;
+
+	bsp = (const srfBspSurface_t*)surf->data;
+	if(!bsp->verts || bsp->numVerts <= 0) return false;
+
+	ClearBounds(bounds[0], bounds[1]);
+	for(i = 0; i < bsp->numVerts; i++) AddPointToBounds(bsp->verts[i].xyz, bounds[0], bounds[1]);
+	return true;
+}
+
+/*
+=================
+R_LoadOcclusionSystem
+
+func_occlusion — brush-энтити для Hardware Occlusion Queries. Без ключей и флагов.
+Генерировать их не нужно: они уже стоят на карте.
+
+  - Каждый func_occlusion получает свою группу (бит 0, 1, 2, ... в порядке энтити-лампы,
+    максимум OCC_MAX_GROUPS = 64). Все brush одного func_occlusion — одна группа.
+  - Каждый brush даёт один AABB. Поверхность мира получает бит группы, только если она ЦЕЛИКОМ
+    лежит внутри одного из AABB группы (частичное касание бит не даёт).
+  - Небесные поверхности (только если на карте есть misc_skybox) -> OCC_OBJ_SKY.
+  - Зеркала (shader mirror) и плоская вода (shader water) на мировых поверхностях -> отдельные
+    объекты OCC_OBJ_SPECIAL0+n со своим AABB. Поверхности brush-энтити (inline models) сюда
+    не входят: они двигаются, их AABB в мировых координатах не постоянен.
+
+Все AABB складываются в один VAO (мировые координаты, 36 индексов на бокс), каждая группа/объект —
+непрерывный диапазон индексов, поэтому один запрос = один glDrawElements.
+=================
+*/
+void R_LoadOcclusionSystem(void) {
+	static char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME];
+	static char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME];
+	static vec3_t boxes[OCC_MAX_BOXES][2];
+	world_t* w = &s_worldData;
+	int numBoxes = 0;
+	int i, g, b, numKeys;
+	int skyBoxes = 0, numSpecial = 0;
+	char* p;
+
+	for(i = 0; i < w->numsurfaces; i++) {
+		w->surfaces[i].occlusionMask = 0;
+		w->surfaces[i].occlusionSlot = -1;
+	}
+
+	w->numOccBoxes = 0;
+	w->occBoxes = NULL;
+	w->numOccGroups = 0;
+	w->numOccSpecial = 0;
+	w->occVao = NULL;
+	Com_Memset(&w->occSky, 0, sizeof(w->occSky));
+
+	R_OcclusionResetState();
+
+	if(!glRefConfig.occlusionQuery) return;
+
+	// 1. группы func_occlusion: один func_occlusion = одна группа, каждый brush = один AABB
+	p = w->entityString;
+	while(p && (numKeys = R_ParseEntityKeys(&p, keys, values)) >= 0) {
+		const char* classname = R_EntityValue(numKeys, keys, values, "classname");
+		const char* v;
+		int modelIndex, first;
+		occRange_t* range;
+		const bmodel_t* bmodel;
+
+		if(!classname || Q_stricmp(classname, "func_occlusion")) continue;
+
+		if(w->numOccGroups >= OCC_MAX_GROUPS) {
+			ri.Printf(PRINT_WARNING, "WARNING: more than %d func_occlusion entities, extra ones ignored\n", OCC_MAX_GROUPS);
+			break;
+		}
+
+		v = R_EntityValue(numKeys, keys, values, "model");
+		modelIndex = (v && v[0] == '*') ? atoi(v + 1) : 0;
+		if(modelIndex <= 0 || modelIndex >= w->numBModels) {
+			ri.Printf(PRINT_WARNING, "WARNING: func_occlusion with bad or missing model key, ignored\n");
+			continue;
+		}
+
+		bmodel = &w->bmodels[modelIndex];
+		range = &w->occGroups[w->numOccGroups];
+		first = numBoxes;
+
+		for(b = 0; bmodel->brushBounds && b < bmodel->numBrushes && numBoxes < OCC_MAX_BOXES; b++) {
+			int axis;
+			bool valid = true;
+			for(axis = 0; axis < 3; axis++) {
+				if(bmodel->brushBounds[b][0][axis] > bmodel->brushBounds[b][1][axis]) valid = false;
+			}
+			if(!valid) continue;
+			VectorCopy(bmodel->brushBounds[b][0], boxes[numBoxes][0]);
+			VectorCopy(bmodel->brushBounds[b][1], boxes[numBoxes][1]);
+			numBoxes++;
+		}
+
+		// модель без пригодных brush-данных: один AABB по bounds inline-модели
+		if(numBoxes == first && numBoxes < OCC_MAX_BOXES) {
+			VectorCopy(bmodel->bounds[0], boxes[numBoxes][0]);
+			VectorCopy(bmodel->bounds[1], boxes[numBoxes][1]);
+			numBoxes++;
+		}
+
+		if(numBoxes == first) continue;
+
+		range->firstBox = first;
+		range->numBoxes = numBoxes - first;
+		w->numOccGroups++;
+	}
+
+	// 2. бит группы на каждую поверхность мира, целиком лежащую внутри хотя бы одного AABB группы
+	if(w->numOccGroups > 0) {
+		for(i = 0; i < w->numWorldSurfaces; i++) {
+			msurface_t* surf = &w->surfaces[i];
+			vec3_t sb[2];
+
+			// небо — отдельная система (OCC_OBJ_SKY), группами его не скрываем
+			if(surf->shader && surf->shader->isSky) continue;
+			if(!R_OcclusionSurfaceBounds(surf, sb)) continue;
+
+			for(g = 0; g < w->numOccGroups; g++) {
+				const occRange_t* range = &w->occGroups[g];
+
+				for(b = 0; b < range->numBoxes; b++) {
+					const vec3_t* box = boxes[range->firstBox + b];
+					int axis;
+
+					// поверхность должна ЦЕЛИКОМ лежать в одном AABB группы (допуск 0.01 для граней вровень с боксом);
+					// AABB поверхности внутри бокса <=> все её вершины внутри
+					for(axis = 0; axis < 3; axis++) {
+						if(sb[0][axis] < box[0][axis] - 0.01f || sb[1][axis] > box[1][axis] + 0.01f) break;
+					}
+
+					if(axis == 3) {
+						surf->occlusionMask |= (uint64_t)1 << g;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	// 3. небесные поверхности: нужны, только если есть что экономить — 3D-скайбокс
+	if(w->hasSkybox) {
+		int skyFirst = numBoxes;
+
+		for(i = 0; i < w->numWorldSurfaces && numBoxes < OCC_MAX_BOXES; i++) {
+			msurface_t* surf = &w->surfaces[i];
+			vec3_t sb[2];
+
+			if(!surf->shader || !surf->shader->isSky) continue;
+			if(!R_OcclusionSurfaceBounds(surf, sb)) continue;
+
+			if(skyBoxes >= OCC_MAX_SKY_BOXES) {
+				// слишком много небесных поверхностей: проверка неба потеряла бы смысл — небо рисуется всегда
+				ri.Printf(PRINT_WARNING, "WARNING: more than %d sky surfaces, 3D skybox occlusion disabled\n", OCC_MAX_SKY_BOXES);
+				numBoxes = skyFirst;
+				skyBoxes = 0;
+				break;
+			}
+
+			for(g = 0; g < 3; g++) {
+				boxes[numBoxes][0][g] = sb[0][g] - OCC_BOX_PAD;
+				boxes[numBoxes][1][g] = sb[1][g] + OCC_BOX_PAD;
+			}
+			numBoxes++;
+			skyBoxes++;
+		}
+
+		if(skyBoxes > 0) {
+			w->occSky.firstBox = skyFirst;
+			w->occSky.numBoxes = skyBoxes;
+		}
+	}
+
+	// 4. отдельные зеркала и вода (мировые поверхности)
+	for(i = 0; i < w->numWorldSurfaces && numSpecial < OCC_MAX_SPECIAL && numBoxes < OCC_MAX_BOXES; i++) {
+		msurface_t* surf = &w->surfaces[i];
+		vec3_t sb[2];
+
+		if(!surf->shader || !(surf->shader->isMirror || surf->isWaterPlane)) continue;
+		if(!R_OcclusionSurfaceBounds(surf, sb)) continue;
+
+		for(g = 0; g < 3; g++) {
+			boxes[numBoxes][0][g] = sb[0][g] - OCC_BOX_PAD;
+			boxes[numBoxes][1][g] = sb[1][g] + OCC_BOX_PAD;
+		}
+
+		w->occSpecial[numSpecial].firstBox = numBoxes;
+		w->occSpecial[numSpecial].numBoxes = 1;
+		w->occSpecialSurf[numSpecial] = surf;
+		surf->occlusionSlot = numSpecial;
+		numSpecial++;
+		numBoxes++;
+	}
+	w->numOccSpecial = numSpecial;
+
+	if(numBoxes == 0) return;
+
+	// 5. боксы в мировых координатах -> один VAO
+	{
+		// ri.Malloc, а не temp-память хипа: R_CreateVao внутри делает Hunk_Alloc
+		float* verts = ri.Malloc(numBoxes * 8 * 3 * sizeof(float));
+		glIndex_t* indexes = ri.Malloc(numBoxes * 36 * sizeof(glIndex_t));
+		// 12 треугольников на бокс; culling при запросах выключен, обход не важен
+		static const byte boxIndexes[36] = {
+		    0, 2, 6, 0, 6, 4,  // -X
+		    1, 5, 7, 1, 7, 3,  // +X
+		    0, 4, 5, 0, 5, 1,  // -Y
+		    2, 3, 7, 2, 7, 6,  // +Y
+		    0, 1, 3, 0, 3, 2,  // -Z
+		    4, 6, 7, 4, 7, 5   // +Z
+		};
+		vec3_t(*store)[2];
+		int c, t;
+
+		int groupBoxes = w->numOccGroups ? w->occGroups[w->numOccGroups - 1].firstBox + w->occGroups[w->numOccGroups - 1].numBoxes : 0;
+
+		for(b = 0; b < numBoxes; b++) {
+			float pad = (b < groupBoxes) ? OCC_GROUP_PAD : 0.0f;
+			for(c = 0; c < 8; c++) {
+				float* out = verts + (b * 8 + c) * 3;
+				out[0] = (c & 1) ? boxes[b][1][0] + pad : boxes[b][0][0] - pad;
+				out[1] = (c & 2) ? boxes[b][1][1] + pad : boxes[b][0][1] - pad;
+				out[2] = (c & 4) ? boxes[b][1][2] + pad : boxes[b][0][2] - pad;
+			}
+			for(t = 0; t < 36; t++) indexes[b * 36 + t] = (glIndex_t)(b * 8 + boxIndexes[t]);
+		}
+
+		w->occVao = R_CreateVao("occlusion_boxes", (byte*)verts, numBoxes * 8 * 3 * sizeof(float), (byte*)indexes, numBoxes * 36 * sizeof(glIndex_t), VAO_USAGE_STATIC);
+		w->occVao->attribs[ATTR_INDEX_POSITION].enabled = 1;
+		w->occVao->attribs[ATTR_INDEX_POSITION].count = 3;
+		w->occVao->attribs[ATTR_INDEX_POSITION].type = GL_FLOAT;
+		w->occVao->attribs[ATTR_INDEX_POSITION].normalized = GL_FALSE;
+		w->occVao->attribs[ATTR_INDEX_POSITION].stride = 3 * sizeof(float);
+		w->occVao->attribs[ATTR_INDEX_POSITION].offset = 0;
+		Vao_SetVertexPointers(w->occVao);
+
+		ri.Free(indexes);
+		ri.Free(verts);
+
+		// боксы остаются на CPU для проверок "камера внутри" и фрустума в бэкенде
+		store = ri.Hunk_Alloc(numBoxes * sizeof(*store), h_low);
+		Com_Memcpy(store, boxes, numBoxes * sizeof(*store));
+		w->occBoxes = store;
+		w->numOccBoxes = numBoxes;
+	}
+
+	// диапазоны индексов: боксы лежат в VAO в том же порядке, что и в occBoxes
+	for(g = 0; g < w->numOccGroups; g++) {
+		w->occGroups[g].firstIndex = w->occGroups[g].firstBox * 36;
+		w->occGroups[g].numIndexes = w->occGroups[g].numBoxes * 36;
+	}
+	w->occSky.firstIndex = w->occSky.firstBox * 36;
+	w->occSky.numIndexes = w->occSky.numBoxes * 36;
+	for(g = 0; g < w->numOccSpecial; g++) {
+		w->occSpecial[g].firstIndex = w->occSpecial[g].firstBox * 36;
+		w->occSpecial[g].numIndexes = w->occSpecial[g].numBoxes * 36;
+	}
+
+	ri.Printf(PRINT_ALL, "...loaded %d occlusion groups, %d sky boxes, %d mirror/water surfaces (%d boxes)\n", w->numOccGroups, skyBoxes, numSpecial, numBoxes);
 }
 
 /*
@@ -3297,6 +3562,9 @@ void RE_LoadWorldMap(const char* name) {
 
 	// planar water reflections (independent of the cubemaps)
 	R_AssignWaterPlanesToWorldSurfaces();
+
+	// func_occlusion: группы, маски поверхностей, боксы неба/зеркал/воды (после volumeFlags и water planes)
+	R_LoadOcclusionSystem();
 
 	s_worldData.dataSize = (byte*)ri.Hunk_Alloc(0, h_low) - startMarker;
 

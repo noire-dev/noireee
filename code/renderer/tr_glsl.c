@@ -42,6 +42,21 @@ extern const char* fallbackShader_shadowmask_vp;
 extern const char* fallbackShader_shadowmask_fp;
 extern const char* fallbackShader_texturecolor_vp;
 extern const char* fallbackShader_texturecolor_fp;
+
+// Hardware Occlusion Queries (func_occlusion): боксы без цвета, шейдер встроен сюда,
+// отдельные glsl-файлы не нужны (но glsl/occlusion_vp.glsl / _fp.glsl при r_externalGLSL 1 подхватятся)
+static const char* fallbackShader_occlusion_vp =
+    "attribute vec3 attr_Position;\n"
+    "uniform mat4 u_ModelViewProjectionMatrix;\n"
+    "void main()\n"
+    "{\n"
+    "\tgl_Position = u_ModelViewProjectionMatrix * vec4(attr_Position, 1.0);\n"
+    "}\n";
+static const char* fallbackShader_occlusion_fp =
+    "void main()\n"
+    "{\n"
+    "\tgl_FragColor = vec4(0.0);\n"
+    "}\n";
 extern const char* fallbackShader_tonemap_vp;
 extern const char* fallbackShader_tonemap_fp;
 extern const char* fallbackShader_gamma_vp;
@@ -935,6 +950,18 @@ void GLSL_InitGPUShaders(void) {
 
 	numEtcShaders++;
 
+	extradefines[0] = '\0';
+	attribs = ATTR_POSITION;
+
+	if(!GLSL_InitGPUShader(&tr.occlusionShader, "occlusion", attribs, true, extradefines, true, fallbackShader_occlusion_vp, fallbackShader_occlusion_fp)) {
+		ri.Error(ERR_FATAL, "Could not load occlusion shader!");
+	}
+
+	GLSL_InitUniforms(&tr.occlusionShader);
+	GLSL_FinishGPUShader(&tr.occlusionShader);
+
+	numEtcShaders++;
+
 	for(i = 0; i < FOGDEF_COUNT; i++) {
 		if((i & FOGDEF_USE_VERTEX_ANIMATION) && (i & FOGDEF_USE_BONE_ANIMATION)) continue;
 
@@ -1293,6 +1320,7 @@ void GLSL_ShutdownGPUShaders(void) {
 	for(i = 0; i < GENERICDEF_COUNT; i++) GLSL_DeleteGPUShader(&tr.genericShader[i]);
 
 	GLSL_DeleteGPUShader(&tr.textureColorShader);
+	GLSL_DeleteGPUShader(&tr.occlusionShader);
 
 	for(i = 0; i < FOGDEF_COUNT; i++) GLSL_DeleteGPUShader(&tr.fogShader[i]);
 

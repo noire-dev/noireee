@@ -237,11 +237,9 @@ static void SetViewportAndScissor(void) {
 	// draw only inside the screen-space rectangle of their source aperture.
 	qglViewport(backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight);
 	if(backEnd.viewParms.scissorWidth > 0 && backEnd.viewParms.scissorHeight > 0) {
-		qglScissor(backEnd.viewParms.scissorX, backEnd.viewParms.scissorY,
-		          backEnd.viewParms.scissorWidth, backEnd.viewParms.scissorHeight);
+		qglScissor(backEnd.viewParms.scissorX, backEnd.viewParms.scissorY, backEnd.viewParms.scissorWidth, backEnd.viewParms.scissorHeight);
 	} else {
-		qglScissor(backEnd.viewParms.viewportX, backEnd.viewParms.viewportY,
-		          backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight);
+		qglScissor(backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight);
 	}
 }
 
@@ -755,6 +753,269 @@ const void* RB_StretchPic(const void* data) {
 }
 
 /*
+==============================================================================
+
+HARDWARE OCCLUSION QUERIES (func_occlusion)
+
+Кадр N (бэкенд): мир уже нарисован -> AABB-боксы рисуются в глубину без записи
+цвета/глубины, на каждый объект один запрос (небо -> группы -> зеркала/вода).
+Кадр N+1 (начало кадра): результаты читаются и превращаются в битовую маску
+скрытых групп, флаг "небо не видно" и флаги скрытых зеркал/воды. Фронтенд кадра N+1
+фильтрует по ним поверхности так же, как по volumeFlags.
+
+Правила, которые держат картинку без дыр:
+  - объект, чей бокс вне фрустума или внутри которого камера, НЕ тестируется и считается видимым (неизвестно = рисуем);
+  - объект скрывается только после OCC_KEEP_FRAMES+1 подряд кадров "не виден", а проявляется сразу по первому положительному результату;
+  - фильтр действует ТОЛЬКО на основной вид игрока (R_SetupVolumeRules): зеркала, отражения, кубмапы, тени и скайбокс смотрят из других камер, для них результат игрока неверен.
+==============================================================================
+*/
+
+#define OCC_CAMERA_MARGIN 8.0f  // камера ближе этого к боксу = внутри (ближняя плоскость отсекает грани)
+
+void R_OcclusionResetState(void) {
+	occlusionState_t* occ = &tr.occlusion;
+	int i;
+
+	occ->hiddenMask = 0;
+	occ->skyHidden = false;
+	Com_Memset(occ->specialHidden, 0, sizeof(occ->specialHidden));
+
+	for(i = 0; i < OCC_NUM_OBJECTS; i++) {
+		occ->keep[i] = OCC_KEEP_FRAMES + 1;
+		occ->stateFrame[i] = 0;
+	}
+
+	for(i = 0; i < OCC_QUERY_SLOTS; i++) occ->slotPending[i] = false;
+	occ->nextSlot = 0;
+	occ->lastIssueFrame = -1;
+}
+
+static void R_OcclusionUpdateMasks(void) {
+	occlusionState_t* occ = &tr.occlusion;
+	const world_t* w = tr.world;
+	uint64_t mask = 0;
+	int i;
+
+	for(i = 0; i < w->numOccGroups; i++) {
+		if(!occ->keep[OCC_OBJ_GROUP0 + i]) mask |= (uint64_t)1 << i;
+	}
+	occ->hiddenMask = mask;
+
+	occ->skyHidden = w->hasSkybox && w->occSky.numBoxes > 0 && !occ->keep[OCC_OBJ_SKY];
+
+	for(i = 0; i < w->numOccSpecial; i++) {
+		occ->specialHidden[i] = !occ->keep[OCC_OBJ_SPECIAL0 + i];
+	}
+}
+
+/*
+Читает результаты слота. block = true ждёт GPU (r_occlusionAsync 0), иначе, если GPU ещё
+не закончил, возвращает false и оставляет прежнее состояние. Результат применяется,
+только если он новее состояния объекта (объект мог быть уже помечен видимым без запроса).
+*/
+static bool R_OcclusionCollect(int slot, bool block) {
+	occlusionState_t* occ = &tr.occlusion;
+	int obj;
+
+	if(!occ->slotPending[slot]) return true;
+
+	if(!block) {
+		GLint available = 0;
+		qglGetQueryObjectiv(occ->queries[slot][occ->slotLast[slot]], GL_QUERY_RESULT_AVAILABLE, &available);
+		if(!available) return false;
+	}
+
+	for(obj = 0; obj < OCC_NUM_OBJECTS; obj++) {
+		GLuint samples = 0;
+
+		if(!occ->slotIssued[slot][obj]) continue;
+
+		qglGetQueryObjectuiv(occ->queries[slot][obj], GL_QUERY_RESULT, &samples);
+
+		if(occ->slotFrame[slot] <= occ->stateFrame[obj]) continue;
+		occ->stateFrame[obj] = occ->slotFrame[slot];
+
+		if(samples > 0) {
+			occ->keep[obj] = OCC_KEEP_FRAMES + 1;
+		} else if(occ->keep[obj] > 0) {
+			occ->keep[obj]--;
+		}
+	}
+
+	occ->slotPending[slot] = false;
+	return true;
+}
+
+/*
+Начало кадра (RE_BeginFrame). Предыдущий кадр уже целиком выполнен бэкендом.
+*/
+void R_OcclusionBeginFrame(void) {
+	occlusionState_t* occ = &tr.occlusion;
+	const world_t* w = tr.world;
+	bool want;
+	int k;
+
+	want = r_occlusion && r_occlusion->integer && glRefConfig.occlusionQuery && occ->queriesReady && w && w->occVao && (w->numOccGroups > 0 || w->occSky.numBoxes > 0 || w->numOccSpecial > 0);
+
+	if(!want) {
+		if(occ->active) {
+			occ->active = false;
+			R_OcclusionResetState();
+		}
+		return;
+	}
+
+	if(!occ->active) {
+		R_OcclusionResetState();
+		occ->active = true;
+	}
+
+	// самый старый слот первым: nextSlot — тот, что будет перезаписан следующим
+	for(k = 0; k < OCC_QUERY_SLOTS; k++) {
+		if(!R_OcclusionCollect((occ->nextSlot + k) % OCC_QUERY_SLOTS, false)) break;
+	}
+
+	R_OcclusionUpdateMasks();
+}
+
+bool R_OcclusionSkyHidden(void) { return tr.occlusion.active && tr.occlusion.skyHidden; }
+
+bool R_OcclusionMirrorHidden(const surfaceType_t* surface) {
+	const world_t* w = tr.world;
+	int i;
+
+	if(!(tr.viewParms.flags & VPF_OCCLUSIONTEST) || !w) return false;
+
+	for(i = 0; i < w->numOccSpecial; i++) {
+		if(w->occSpecialSurf[i]->data == surface) return tr.occlusion.specialHidden[i] != 0;
+	}
+	return false;
+}
+
+bool R_OcclusionWaterHidden(const msurface_t* surf) {
+	if(surf->occlusionSlot < 0 || !(tr.viewParms.flags & VPF_OCCLUSIONTEST)) return false;
+	return tr.occlusion.specialHidden[surf->occlusionSlot] != 0;
+}
+
+/*
+Нужно ли вообще тестировать объект в этом кадре: камера не внутри ни одного из его боксов
+(иначе видны только задние грани, результат бессмыслен) и хотя бы один бокс в фрустуме.
+*/
+static bool RB_OcclusionRangeTestable(const world_t* w, const occRange_t* range, const vec3_t eye, int numPlanes) {
+	bool anyInFrustum = false;
+	int i, j;
+
+	for(i = 0; i < range->numBoxes; i++) {
+		const vec3_t* box = w->occBoxes[range->firstBox + i];
+
+		if(eye[0] >= box[0][0] - OCC_CAMERA_MARGIN && eye[0] <= box[1][0] + OCC_CAMERA_MARGIN && eye[1] >= box[0][1] - OCC_CAMERA_MARGIN && eye[1] <= box[1][1] + OCC_CAMERA_MARGIN && eye[2] >= box[0][2] - OCC_CAMERA_MARGIN && eye[2] <= box[1][2] + OCC_CAMERA_MARGIN) {
+			return false;
+		}
+
+		if(!anyInFrustum) {
+			for(j = 0; j < numPlanes; j++) {
+				if(BoxOnPlaneSide((float*)box[0], (float*)box[1], &backEnd.viewParms.frustum[j]) == 2) break;
+			}
+			if(j == numPlanes) anyInFrustum = true;
+		}
+	}
+
+	return anyInFrustum;
+}
+
+static void RB_OcclusionTestObject(const world_t* w, int obj, const occRange_t* range, int slot, int frame, const vec3_t eye, int numPlanes) {
+	occlusionState_t* occ = &tr.occlusion;
+
+	if(range->numBoxes <= 0) return;
+
+	if(!RB_OcclusionRangeTestable(w, range, eye, numPlanes)) {
+		// результат неизвестен — считаем видимым, более старые результаты не должны это перебить
+		occ->keep[obj] = OCC_KEEP_FRAMES + 1;
+		occ->stateFrame[obj] = frame;
+		return;
+	}
+
+	qglBeginQuery(glRefConfig.occlusionQueryTarget, occ->queries[slot][obj]);
+	qglDrawElements(GL_TRIANGLES, range->numIndexes, GL_INDEX_TYPE, BUFFER_OFFSET(range->firstIndex * sizeof(glIndex_t)));
+	qglEndQuery(glRefConfig.occlusionQueryTarget);
+
+	occ->slotIssued[slot][obj] = 1;
+	occ->slotLast[slot] = obj;
+}
+
+/*
+Вызывается из RB_DrawSurfs сразу после отрисовки мира основного вида (глубина заполнена).
+*/
+void RB_OcclusionTest(void) {
+	occlusionState_t* occ = &tr.occlusion;
+	const world_t* w = tr.world;
+	const viewParms_t* vp = &backEnd.viewParms;
+	int frame = vp->frameCount;
+	int slot, numPlanes, i;
+	vec3_t eye;
+	mat4_t mvp;
+
+	if(!occ->active || !w || !w->occVao) return;
+	if(!(vp->flags & VPF_OCCLUSIONTEST) || (backEnd.refdef.rdflags & RDF_NOWORLDMODEL)) return;
+
+	// одна серия запросов на кадр, даже если мир рисуется несколькими сценами
+	if(occ->lastIssueFrame == frame) return;
+	occ->lastIssueFrame = frame;
+
+	slot = occ->nextSlot;
+	occ->nextSlot = (slot + 1) % OCC_QUERY_SLOTS;
+	occ->slotPending[slot] = false;  // результат, который не успели прочитать за 2 кадра, выбрасываем
+	occ->slotFrame[slot] = frame;
+	occ->slotLast[slot] = -1;
+	Com_Memset(occ->slotIssued[slot], 0, sizeof(occ->slotIssued[slot]));
+
+	VectorCopy(vp->or.origin, eye);
+	numPlanes = (vp->flags & VPF_FARPLANEFRUSTUM) ? 5 : 4;
+
+	Mat4Multiply(backEnd.viewParms.projectionMatrix, backEnd.viewParms.world.modelMatrix, mvp);
+
+	// цвет и глубина не пишутся, depth test обычный (LEQUAL), без culling: бокс считается видимым
+	// с любой стороны
+	GL_State(0);
+	GL_Cull(CT_TWO_SIDED);
+	qglDepthRange(0, 1);
+	qglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+
+	GLSL_BindProgram(&tr.occlusionShader);
+	GLSL_SetUniformMat4(&tr.occlusionShader, UNIFORM_MODELVIEWPROJECTIONMATRIX, mvp);
+	R_BindVao(w->occVao);
+
+	// 1. небо первым: 3D-скайбокс — самый тяжёлый проход кадра
+	if(w->hasSkybox) RB_OcclusionTestObject(w, OCC_OBJ_SKY, &w->occSky, slot, frame, eye, numPlanes);
+
+	// 2. все AABB групп func_occlusion
+	for(i = 0; i < w->numOccGroups; i++) {
+		RB_OcclusionTestObject(w, OCC_OBJ_GROUP0 + i, &w->occGroups[i], slot, frame, eye, numPlanes);
+	}
+
+	// 3. отдельные зеркала и вода — только те, что не отсёк ни один AABB группы
+	for(i = 0; i < w->numOccSpecial; i++) {
+		const msurface_t* surf = w->occSpecialSurf[i];
+
+		if(surf->occlusionMask && !(surf->occlusionMask & ~occ->hiddenMask)) {
+			// поверхность уже скрыта группой и в кадре не рисуется: состояние неизвестно -> видимое
+			occ->keep[OCC_OBJ_SPECIAL0 + i] = OCC_KEEP_FRAMES + 1;
+			occ->stateFrame[OCC_OBJ_SPECIAL0 + i] = frame;
+			continue;
+		}
+
+		RB_OcclusionTestObject(w, OCC_OBJ_SPECIAL0 + i, &w->occSpecial[i], slot, frame, eye, numPlanes);
+	}
+
+	qglColorMask(!backEnd.colorMask[0], !backEnd.colorMask[1], !backEnd.colorMask[2], !backEnd.colorMask[3]);
+
+	occ->slotPending[slot] = occ->slotLast[slot] >= 0;
+
+	// r_occlusionAsync 0: ждём GPU прямо сейчас (простой конвейера, но самый свежий результат)
+	if(occ->slotPending[slot] && r_occlusionAsync && !r_occlusionAsync->integer) R_OcclusionCollect(slot, true);
+}
+
+/*
 =============
 RB_DrawSurfs
 
@@ -910,10 +1171,13 @@ const void* RB_DrawSurfs(const void* data) {
 		qglColorMask(!backEnd.colorMask[0], !backEnd.colorMask[1], !backEnd.colorMask[2], !backEnd.colorMask[3]);
 	} else if(!isShadowView) {
 		RB_RenderDrawSurfList(cmd->drawSurfs, cmd->numDrawSurfs);
+
+		// func_occlusion: мир основного вида уже в глубине — ставим запросы по AABB
+		if(backEnd.viewParms.flags & VPF_OCCLUSIONTEST) RB_OcclusionTest();
 	}
 
 	{
-		bool skyboxActive = tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL);
+		bool skyboxActive = tr.world && tr.world->hasSkybox && r_3dsky->integer && !tr.hideSky && !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) && !(backEnd.viewParms.flags & VPF_SKYSKIPPED);
 		bool occlusionPass = skyboxActive ? (backEnd.viewParms.flags & VPF_SKYDRAWN) != 0 : !(backEnd.viewParms.flags & VPF_SKYBOX3D);
 
 		if(glRefConfig.framebufferObject && r_sunRays->integer && occlusionPass) {

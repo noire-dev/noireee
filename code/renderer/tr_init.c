@@ -107,6 +107,8 @@ cvar_t* r_fogStart;
 cvar_t* r_fogEnd;
 
 cvar_t* r_3dsky;
+cvar_t* r_occlusion;
+cvar_t* r_occlusionAsync;
 cvar_t* r_portalRedrawSkybox;
 
 cvar_t* r_recursionCount;
@@ -925,6 +927,10 @@ void R_Register(void) {
 	r_fogEnd = ri.Cvar_Get("r_fogEnd", "500000", CVAR_ARCHIVE);
 
 	r_3dsky = ri.Cvar_Get("r_3dsky", "1", CVAR_ARCHIVE);
+
+	// Hardware Occlusion Queries (func_occlusion, 3D-скайбокс, зеркала, вода)
+	r_occlusion = ri.Cvar_Get("r_occlusion", "1", CVAR_ARCHIVE);
+	r_occlusionAsync = ri.Cvar_Get("r_occlusionAsync", "1", CVAR_ARCHIVE);
 	r_portalRedrawSkybox = ri.Cvar_Get("r_portalRedrawSkybox", "1", CVAR_ARCHIVE);
 
 	r_recursionCount = ri.Cvar_Get("r_recursionCount", "2", CVAR_ARCHIVE);
@@ -1009,12 +1015,23 @@ void R_InitQueries(void) {
 	if(!glRefConfig.occlusionQuery) return;
 
 	if(r_sunRays->integer) qglGenQueries(ARRAY_LEN(tr.sunFlareQuery), tr.sunFlareQuery);
+
+	// func_occlusion: по одному query-объекту на (слот, объект)
+	qglGenQueries(OCC_QUERY_SLOTS * OCC_NUM_OBJECTS, &tr.occlusion.queries[0][0]);
+	tr.occlusion.queriesReady = true;
+	R_OcclusionResetState();
 }
 
 void R_ShutDownQueries(void) {
 	if(!glRefConfig.occlusionQuery) return;
 
 	if(r_sunRays->integer) qglDeleteQueries(ARRAY_LEN(tr.sunFlareQuery), tr.sunFlareQuery);
+
+	if(tr.occlusion.queriesReady) {
+		qglDeleteQueries(OCC_QUERY_SLOTS * OCC_NUM_OBJECTS, &tr.occlusion.queries[0][0]);
+		tr.occlusion.queriesReady = false;
+		tr.occlusion.active = false;
+	}
 }
 
 /*

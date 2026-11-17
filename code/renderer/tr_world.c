@@ -242,6 +242,14 @@ static void R_AddWorldSurface(msurface_t* surf, const dlightMask_t* sourceDlight
 		}
 	}
 
+	/*
+	 * func_occlusion: поверхность скрыта, только если скрыты ВСЕ группы, которых она коснулась
+	 * (видна хотя бы одна группа — рисуем). occlusionHidden != 0 лишь у основного вида игрока
+	 * (R_SetupVolumeRules), поэтому зеркала, отражения, кубмапы и тени этот фильтр не затрагивает.
+	 * Поверхности без групп (occlusionMask == 0) и небо рисуются всегда.
+	 */
+	if(surf->occlusionMask && !(surf->occlusionMask & ~tr.viewParms.occlusionHidden)) return;
+
 	// Правило объёмов: группа VOLUME_SKY (небо и 3D-скайбокс) не участвует в
 	// тенях от солнца (VPF_DEPTHSHADOW ортографические каскады) и в динамических
 	// тенях от dlight.
