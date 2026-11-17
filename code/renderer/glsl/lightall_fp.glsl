@@ -550,7 +550,7 @@ void main()
 	vec3 modifiedR = R;
 	modifiedR.z -= (u_CubeMapInfo.y - u_CubeMapInfo.x) / ((u_CubeMapInfo.z + 0.5) + u_CubeMapInfo.w);
 	vec3 parallax = u_CubeMapParallaxInfo.xyz + 1.0f / 65536 * viewDir;
-	vec3 cubeLightColor = textureCubeLod(u_CubeMap, modifiedR + parallax, ROUGHNESS_MIPS * roughness).rgb * u_EnableTextures.w;
+	vec3 cubeLightColor = textureCubeLod(u_CubeMap, modifiedR + parallax, ROUGHNESS_MIPS_CUBE * roughness).rgb * u_EnableTextures.w;
 
 	cubeLightColor *= abs(cubeLightColor);
 
@@ -584,7 +584,7 @@ void main()
 
 		vec2 waterUV = clamp(waterClip.xy / max(waterClip.w, 0.0001) * 0.5 + 0.5, vec2(0.001), vec2(0.999));
 
-		vec3 planarColor = texture2DLod(u_WaterReflectMap, waterUV, ROUGHNESS_MIPS * roughness).rgb;
+		vec3 planarColor = texture2DLod(u_WaterReflectMap, waterUV, ROUGHNESS_MIPS_PLANAR * roughness).rgb;
 
 		// the reflection image holds the same encoded colour as the cubemap (see the sqrt at the end of main)
 		planarColor *= abs(planarColor);

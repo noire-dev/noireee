@@ -664,7 +664,7 @@ static jiggleState_t r_jiggleStates[MAX_JIGGLE_STATES];
 R_JiggleAcquireState
 
 Find the simulation of the entity from the last frames or start a new one.
-The same entity added twice in one frame (e.g. first person body + mirror
+The same entity added twice in one frame (e.g. first person body + reflected view
 copy) gets the same simulation.
 =====================
 */
@@ -721,7 +721,7 @@ R_JiggleUpdateScene
 Frontend, once per RE_RenderScene: step the jiggle simulation of every entity
 of this scene that has jiggle bones. The result (a rotation per joint) is
 stored in tr.jiggleEntries and applied by the backend while skinning, so all
-passes (main view, mirrors, shadows, cubemaps) see the same pose.
+passes (main view, portal views, shadows, cubemaps) see the same pose.
 =====================
 */
 void R_JiggleUpdateScene(void) {
@@ -961,7 +961,7 @@ void RE_EndScene(void) {
 =====================
 R_AddMapPortalEntities
 
-Insert the map-authored func_portal_in brush models into the current scene.
+Insert map-authored portal input and reflected brush models into the scene.
 The renderer owns these static entities; func_portal_out is only a destination
 frame and is deliberately not submitted for drawing.
 =====================
@@ -975,7 +975,7 @@ void R_AddMapPortalEntities(void) {
 		const portalInfo_t* portal = &tr.world->portals[i];
 		refEntity_t ent;
 
-		if(!portal->isInput || portal->targetIndex < 0 || portal->modelHandle <= 0) continue;
+		if(!portal->isInput || (!portal->isReflected && portal->targetIndex < 0) || portal->modelHandle <= 0) continue;
 
 		Com_Memset(&ent, 0, sizeof(ent));
 		ent.reType = RT_MODEL;
@@ -999,8 +999,7 @@ RE_RenderScene
 Draw a 3D view into a part of the window, then return
 to 2D drawing.
 
-Rendering a scene may require multiple views to be rendered
-to handle mirrors,
+Rendering a scene may require multiple portal views to be rendered
 @@@@@@@@@@@@@@@@@@@@@
 */
 void RE_RenderScene(const refdef_t* fd) {
@@ -1018,8 +1017,8 @@ void RE_RenderScene(const refdef_t* fd) {
 		ri.Error(ERR_DROP, "R_RenderScene: NULL worldmodel");
 	}
 
-	// func_portal_in brush models are static map entities managed by the renderer.
-	// Add them before RE_BeginScene snapshots the current scene entity range.
+	// Portal input and reflected brush models are static map entities managed
+	// by the renderer. Add them before RE_BeginScene snapshots the scene range.
 	if(!(fd->rdflags & RDF_NOWORLDMODEL)) R_AddMapPortalEntities();
 
 	RE_BeginScene(fd);

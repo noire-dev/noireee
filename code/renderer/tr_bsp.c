@@ -2461,7 +2461,7 @@ void R_LoadMapEntitySystems(void) {
 						// Оставляем слот для предупреждения во втором проходе парсера.
 						numDisplays++;
 					}
-				} else if(!Q_stricmp(classname, "func_portal_in") || !Q_stricmp(classname, "func_portal_out"))
+				} else if(!Q_stricmp(classname, "func_portal_in") || !Q_stricmp(classname, "func_portal_out") || !Q_stricmp(classname, "func_portal_mirror"))
 					numPortals++;
 				continue;
 			}
@@ -2577,14 +2577,16 @@ void R_LoadMapEntitySystems(void) {
 					di->whitelist = whitelist;
 					di->hideSky = hideSky;
 				}
-			} else if((!Q_stricmp(classname, "func_portal_in") || !Q_stricmp(classname, "func_portal_out")) && w->numPortals < numPortals) {
+			} else if((!Q_stricmp(classname, "func_portal_in") || !Q_stricmp(classname, "func_portal_out") || !Q_stricmp(classname, "func_portal_mirror")) && w->numPortals < numPortals) {
 				portalInfo_t* portal = &w->portals[w->numPortals];
 				int modelIndex;
 				const char* modelValue;
-				bool isInput = !Q_stricmp(classname, "func_portal_in");
+				bool isReflected = !Q_stricmp(classname, "func_portal_mirror");
+				bool isInput = !Q_stricmp(classname, "func_portal_in") || isReflected;
 
 				memset(portal, 0, sizeof(*portal));
 				portal->isInput = isInput;
+				portal->isReflected = isReflected;
 				portal->targetIndex = -1;
 				modelValue = R_EntityValue(numKeys, keys, values, "model");
 				modelIndex = (modelValue && modelValue[0] == '*') ? atoi(modelValue + 1) : 0;
@@ -2593,10 +2595,12 @@ void R_LoadMapEntitySystems(void) {
 				R_ParseEntityVec3(R_EntityValue(numKeys, keys, values, "origin"), portal->origin);
 				R_ParseEntityAngles(numKeys, keys, values, portal->angles);
 
-				v = R_EntityValue(numKeys, keys, values, "targetname");
-				if(v) Q_strncpyz(portal->targetName, v, sizeof(portal->targetName));
-				v = R_EntityValue(numKeys, keys, values, "target");
-				if(v) Q_strncpyz(portal->target, v, sizeof(portal->target));
+				if(!isReflected) {
+					v = R_EntityValue(numKeys, keys, values, "targetname");
+					if(v) Q_strncpyz(portal->targetName, v, sizeof(portal->targetName));
+					v = R_EntityValue(numKeys, keys, values, "target");
+					if(v) Q_strncpyz(portal->target, v, sizeof(portal->target));
+				}
 
 				if(!portal->modelHandle || !R_GetPortalFaceForModel(modelIndex, portal)) {
 					ri.Printf(PRINT_WARNING, "%s with model '%s' has no brush model or no planar 'portal' face; ignored\n", classname, modelValue ? modelValue : "(missing)");
@@ -2615,12 +2619,13 @@ void R_LoadMapEntitySystems(void) {
 		}
 	}
 
-	// Resolve each input endpoint to the named output endpoint. The mapping is
-	// intentionally one-way: only func_portal_in is drawn as a live portal.
+	// Resolve each ordinary input endpoint to the named output endpoint. Mirror
+	// endpoints are self-contained: their destination is the same face with its
+	// normal reversed, so they do not need a func_portal_out.
 	for(i = 0; i < w->numPortals; i++) {
 		portalInfo_t* in = &w->portals[i];
 		int j;
-		if(!in->isInput || !in->target[0]) continue;
+		if(!in->isInput || in->isReflected || !in->target[0]) continue;
 		for(j = 0; j < w->numPortals; j++) {
 			portalInfo_t* out = &w->portals[j];
 			if(!out->isInput && out->targetName[0] && !Q_stricmp(in->target, out->targetName)) {
@@ -3059,9 +3064,9 @@ func_occlusion — brush-энтити для Hardware Occlusion Queries. Без 
   - Каждый brush даёт один AABB. Поверхность мира получает бит группы, только если она ЦЕЛИКОМ
     лежит внутри одного из AABB группы (частичное касание бит не даёт).
   - Небесные поверхности (только если на карте есть misc_skybox) -> OCC_OBJ_SKY.
-  - Зеркала (shader mirror) и плоская вода (shader water) на мировых поверхностях -> отдельные
-    объекты OCC_OBJ_SPECIAL0+n со своим AABB. Поверхности brush-энтити (inline models) сюда
-    не входят: они двигаются, их AABB в мировых координатах не постоянен.
+  - Плоская вода (shader water) на мировых поверхностях -> отдельные объекты
+    OCC_OBJ_SPECIAL0+n со своим AABB. Поверхности brush-энтити (inline models) сюда не входят:
+    они двигаются, их AABB в мировых координатах не постоянен.
 
 Все AABB складываются в один VAO (мировые координаты, 36 индексов на бокс), каждая группа/объект —
 непрерывный диапазон индексов, поэтому один запрос = один glDrawElements.
@@ -3211,12 +3216,13 @@ void R_LoadOcclusionSystem(void) {
 		}
 	}
 
-	// 4. отдельные зеркала и вода (мировые поверхности)
-	for(i = 0; i < w->numWorldSurfaces && numSpecial < OCC_MAX_SPECIAL && numBoxes < OCC_MAX_BOXES; i++) {
+	// 4. отдельные поверхности воды (зеркала используют общий portal pass)
+	for(i = 0; i < w->numsurfaces && numSpecial < OCC_MAX_SPECIAL && numBoxes < OCC_MAX_BOXES; i++) {
 		msurface_t* surf = &w->surfaces[i];
 		vec3_t sb[2];
 
-		if(!surf->shader || !(surf->shader->isMirror || surf->isWaterPlane)) continue;
+		if(!surf->shader) continue;
+		if(!(surf->shader->isPortal || (i < w->numWorldSurfaces && surf->isWaterPlane))) continue;
 		if(!R_OcclusionSurfaceBounds(surf, sb)) continue;
 
 		for(g = 0; g < 3; g++) {
@@ -3296,7 +3302,7 @@ void R_LoadOcclusionSystem(void) {
 		w->occSpecial[g].numIndexes = w->occSpecial[g].numBoxes * 36;
 	}
 
-	ri.Printf(PRINT_ALL, "...loaded %d occlusion groups, %d sky boxes, %d mirror/water surfaces (%d boxes)\n", w->numOccGroups, skyBoxes, numSpecial, numBoxes);
+	ri.Printf(PRINT_ALL, "...loaded %d occlusion groups, %d sky boxes, %d water surfaces (%d boxes)\n", w->numOccGroups, skyBoxes, numSpecial, numBoxes);
 }
 
 /*

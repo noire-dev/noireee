@@ -147,6 +147,7 @@ spawn_t spawns[] = {// info entities don't do anything at all, but provide posit
 
                     {"func_portal_in", SP_func_portal_in},
                     {"func_portal_out", SP_func_portal_out},
+                    {"func_portal_mirror", SP_notnull},
 
                     {"func_volume", SP_null},
                     {"func_display", SP_null},

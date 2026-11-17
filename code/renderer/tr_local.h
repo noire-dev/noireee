@@ -217,7 +217,7 @@ typedef struct vao_s {
 
 typedef enum {
 	SS_BAD,
-	SS_PORTAL,       // mirrors, portals, viewscreens
+	SS_PORTAL,       // portal apertures, including reflected portal apertures
 	SS_ENVIRONMENT,  // sky box
 	SS_OPAQUE,       // opaque
 
@@ -485,8 +485,7 @@ typedef struct shader_s {
 
 	float portalRange;  // distance to fog out at
 	bool isPortal;
-	bool isMirror;  // planar mirror view, no paired map entity required
-	bool isWater;   // planar reflection material
+	bool isWater;  // planar reflection material
 
 	cullType_t cullType;  // CT_FRONT_SIDED, CT_BACK_SIDED, or CT_TWO_SIDED
 	bool polygonOffset;   // set for decals and other items that must be offset
@@ -911,9 +910,9 @@ typedef struct {
 	orientationr_t or ;
 	orientationr_t world;
 	vec3_t pvsOrigin;     // may be different than or.origin for portals
-	bool isPortal;        // true if this view is through a portal or mirror
-	bool isMirror;        // the portal is a mirror, invert the face culling
-	int portalRecursion;  // number of portal/mirror transitions from the primary view
+	bool isPortal;        // true if this view is through a portal
+	bool isReflected;     // reflected view: invert face culling
+	int portalRecursion;  // number of portal transitions from the primary view
 	viewParmFlags_t flags;
 
 	unsigned volumeFlags;
@@ -922,7 +921,7 @@ typedef struct {
 	uint64_t occlusionHidden;      // func_occlusion: биты групп, скрытых оклюзией (только основной вид игрока, иначе 0)
 	int frameSceneNum;             // copied from tr.frameSceneNum
 	int frameCount;                // copied from tr.frameCount
-	cplane_t portalPlane;          // clip anything behind this if mirroring
+	cplane_t portalPlane;          // oblique near clip plane for portal views
 	bool hasWaterReflection;       // planar water reflection (r_planarReflections) was rendered for this view
 	cplane_t waterReflectPlane;    // arbitrary world-space plane used by the planar reflection
 	float waterReflectMatrix[16];  // viewProjection of the mirrored camera (world -> clip)
@@ -1335,11 +1334,12 @@ typedef struct displayInfo_s {
 
 /*
  * Renderer-owned portal endpoints read from the BSP entity lump. `func_portal_in`
- * brush models are inserted into the scene automatically; their `target` key
- * names the `targetname` of a `func_portal_out` endpoint.
+ * brush models are paired with `func_portal_out`; `func_portal_mirror` uses
+ * the same brush face as both ends and reflects the view across that face.
  */
 typedef struct portalInfo_s {
 	bool isInput;
+	bool isReflected;
 	int modelIndex;   // BSP submodel index (*N)
 	int modelHandle;  // renderer model handle for the inline brush model
 	int targetIndex;  // paired func_portal_out index, or -1 when invalid
@@ -2087,13 +2087,13 @@ void R_RenderWaterReflection(void);
 void R_NoteWaterSurface(const msurface_t* surf);
 
 // func_occlusion
-void R_LoadOcclusionSystem(void);                            // tr_bsp.c: группы, маски поверхностей, VAO боксов
-void R_OcclusionResetState(void);                            // всё считается видимым, ждущие запросы сброшены
-void R_OcclusionBeginFrame(void);                            // начало кадра: чтение результатов, обновление масок
-void RB_OcclusionTest(void);                                 // бэкенд: запросы по AABB после отрисовки мира
-bool R_OcclusionSkyHidden(void);                             // 3D-скайбокс не виден — пропустить проход 1
-bool R_OcclusionMirrorHidden(const surfaceType_t* surface);  // зеркало/портал мира скрыт — не рисовать вид
-bool R_OcclusionWaterHidden(const msurface_t* surf);         // вода скрыта — не строить планарное отражение
+void R_LoadOcclusionSystem(void);                     // tr_bsp.c: группы, маски поверхностей, VAO боксов
+void R_OcclusionResetState(void);                     // всё считается видимым, ждущие запросы сброшены
+void R_OcclusionBeginFrame(void);                     // начало кадра: чтение результатов, обновление масок
+void RB_OcclusionTest(void);                          // бэкенд: запросы по AABB после отрисовки мира
+bool R_OcclusionSkyHidden(void);                      // 3D-скайбокс не виден — пропустить проход 1
+bool R_OcclusionWaterHidden(const msurface_t* surf);  // вода скрыта — не строить планарное отражение
+bool R_OcclusionPortalHidden(const surfaceType_t* surface);
 void R_RenderDlightCubemaps(const refdef_t* fd);
 void R_RenderSunShadowMaps(const refdef_t* fd, int level);
 void R_RenderCubemapSide(int cubemapSide, bool subscene);

@@ -421,16 +421,31 @@ static void GLSL_GetShaderHeader(GLenum shaderType, const GLchar* extra, char* d
 	fbufHeightScale = 1.0f / ((float)glConfig.vidHeight);
 	Q_strcat(dest, size, va("#ifndef r_FBufScale\n#define r_FBufScale vec2(%f, %f)\n#endif\n", fbufWidthScale, fbufHeightScale));
 
+	// Cube and planar reflection textures are independent. Both GLSL sampling
+	// paths use roughness-based mip LOD, so define the matching limit separately.
+	// Planar-only mode must not depend on r_cubeReflections being enabled.
 	if(r_cubeReflections->integer) {
-		int cubeMipSize = r_cubeReflectionsResolution->integer;
+		int cubeMipSize = tr.renderCubeImage ? tr.renderCubeImage->width : r_cubeReflectionsResolution->integer;
 		int numRoughnessMips = 0;
 
-		while(cubeMipSize) {
+		while(cubeMipSize > 0) {
 			cubeMipSize >>= 1;
 			numRoughnessMips++;
 		}
 		numRoughnessMips = MAX(1, numRoughnessMips - 2);
-		Q_strcat(dest, size, va("#define ROUGHNESS_MIPS float(%d)\n", numRoughnessMips));
+		Q_strcat(dest, size, va("#define ROUGHNESS_MIPS_CUBE float(%d)\n", numRoughnessMips));
+	}
+
+	if(r_planarReflections->integer) {
+		int planarMipSize = tr.waterReflectionImage ? MAX(tr.waterReflectionImage->width, tr.waterReflectionImage->height) : 1;
+		int numRoughnessMips = 0;
+
+		while(planarMipSize > 0) {
+			planarMipSize >>= 1;
+			numRoughnessMips++;
+		}
+		numRoughnessMips = MAX(1, numRoughnessMips - 2);
+		Q_strcat(dest, size, va("#define ROUGHNESS_MIPS_PLANAR float(%d)\n", numRoughnessMips));
 	}
 
 	// OK we added a lot of stuff but if we do something bad in the GLSL shaders then we want the proper line

@@ -1437,7 +1437,7 @@ void RB_StageIteratorGeneric(void) {
 		if((backEnd.viewParms.flags & (VPF_SHADOWMAPS | VPF_DEPTHSHADOW)) && !(backEnd.viewParms.flags & VPF_ORTHOGRAPHIC)) newCullFront = !newCullFront;  // FIX
 		if(backEnd.viewParms.flags & VPF_DEPTHSHADOW) oldCullFront = !oldCullFront;
 
-		if(backEnd.viewParms.isMirror) {
+		if(backEnd.viewParms.isReflected) {
 			newCullFront = !newCullFront;
 			oldCullFront = !oldCullFront;
 		}

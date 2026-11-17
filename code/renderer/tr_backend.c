@@ -758,9 +758,9 @@ const void* RB_StretchPic(const void* data) {
 HARDWARE OCCLUSION QUERIES (func_occlusion)
 
 Кадр N (бэкенд): мир уже нарисован -> AABB-боксы рисуются в глубину без записи
-цвета/глубины, на каждый объект один запрос (небо -> группы -> зеркала/вода).
+цвета/глубины, на каждый объект один запрос (небо -> группы -> вода).
 Кадр N+1 (начало кадра): результаты читаются и превращаются в битовую маску
-скрытых групп, флаг "небо не видно" и флаги скрытых зеркал/воды. Фронтенд кадра N+1
+скрытых групп, флаг "небо не видно" и флаги скрытой воды. Фронтенд кадра N+1
 фильтрует по ним поверхности так же, как по volumeFlags.
 
 Правила, которые держат картинку без дыр:
@@ -880,7 +880,12 @@ void R_OcclusionBeginFrame(void) {
 
 bool R_OcclusionSkyHidden(void) { return tr.occlusion.active && tr.occlusion.skyHidden; }
 
-bool R_OcclusionMirrorHidden(const surfaceType_t* surface) {
+bool R_OcclusionWaterHidden(const msurface_t* surf) {
+	if(surf->occlusionSlot < 0 || !(tr.viewParms.flags & VPF_OCCLUSIONTEST)) return false;
+	return tr.occlusion.specialHidden[surf->occlusionSlot] != 0;
+}
+
+bool R_OcclusionPortalHidden(const surfaceType_t* surface) {
 	const world_t* w = tr.world;
 	int i;
 
@@ -890,11 +895,6 @@ bool R_OcclusionMirrorHidden(const surfaceType_t* surface) {
 		if(w->occSpecialSurf[i]->data == surface) return tr.occlusion.specialHidden[i] != 0;
 	}
 	return false;
-}
-
-bool R_OcclusionWaterHidden(const msurface_t* surf) {
-	if(surf->occlusionSlot < 0 || !(tr.viewParms.flags & VPF_OCCLUSIONTEST)) return false;
-	return tr.occlusion.specialHidden[surf->occlusionSlot] != 0;
 }
 
 /*
@@ -993,7 +993,7 @@ void RB_OcclusionTest(void) {
 		RB_OcclusionTestObject(w, OCC_OBJ_GROUP0 + i, &w->occGroups[i], slot, frame, eye, numPlanes);
 	}
 
-	// 3. отдельные зеркала и вода — только те, что не отсёк ни один AABB группы
+	// 3. отдельные водные поверхности — только те, что не отсёк ни один AABB группы
 	for(i = 0; i < w->numOccSpecial; i++) {
 		const msurface_t* surf = w->occSpecialSurf[i];
 
@@ -1218,10 +1218,9 @@ const void* RB_DrawSurfs(const void* data) {
 	}
 
 	// FIXME? backEnd.viewParms doesn't get properly initialized for 2D drawing.
-	// r_cubeReflections 1 generates cubemaps with R_RenderCubemapSide()
-	// and sets isMirror = true. Clear it here to prevent it from leaking
+	// reflected render passes set isReflected = true. Clear it here to prevent it from leaking
 	// to 2D drawing and causing the loading screen to be culled.
-	backEnd.viewParms.isMirror = false;
+	backEnd.viewParms.isReflected = false;
 	backEnd.viewParms.flags = 0;
 
 	return (const void*)(cmd + 1);

@@ -368,7 +368,7 @@ static void AutospriteDeform(void) {
 		VectorScale(leftDir, radius, left);
 		VectorScale(upDir, radius, up);
 
-		if(backEnd.viewParms.isMirror) {
+		if(backEnd.viewParms.isReflected) {
 			VectorSubtract(vec3_origin, left, left);
 		}
 
