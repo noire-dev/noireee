@@ -1636,9 +1636,6 @@ int BotGetActivateGoal(bot_state_t* bs, int entitynum, bot_activategoal_t* activ
 				activategoal->time = FloatTime() + t * 0.01 + 5;
 			}
 			return ent;
-		} else if(!strcmp(classname, "func_timer")) {
-			// just skip the func_timer
-			continue;
 		}
 		// the actual button or trigger might be linked through a target_relay or target_delay
 		else if(!strcmp(classname, "target_relay") || !strcmp(classname, "target_delay")) {
@@ -2031,4 +2028,3 @@ BotShutdownDeathmatchAI
 ==================
 */
 void BotShutdownDeathmatchAI(void) {}
-

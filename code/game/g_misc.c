@@ -22,11 +22,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "g_local.h"
 
-void SP_info_null(gentity_t* self) { G_FreeEntity(self); }
+void SP_null(gentity_t* self) { G_FreeEntity(self); }
 
-void SP_info_notnull(gentity_t* self) { G_SetOrigin(self, self->s.origin); }
-
-void SP_light(gentity_t* self) { G_FreeEntity(self); }
+void SP_notnull(gentity_t* self) { G_SetOrigin(self, self->s.origin); }
 
 void TeleportPlayer(gentity_t* player, vec3_t origin, vec3_t angles) {
 	bool noAngles;
@@ -64,70 +62,3 @@ void TeleportPlayer(gentity_t* player, vec3_t origin, vec3_t angles) {
 }
 
 void SP_misc_teleporter_dest(gentity_t* ent) {}
-
-void SP_misc_model(gentity_t* ent) { G_FreeEntity(ent); }
-
-void locateCamera(gentity_t* ent) {
-	vec3_t dir;
-	gentity_t* target;
-	gentity_t* owner;
-
-	owner = G_PickTarget(ent->target);
-	if(!owner) {
-		G_Printf("Couldn't find target for misc_partal_surface\n");
-		G_FreeEntity(ent);
-		return;
-	}
-	ent->r.ownerNum = owner->s.number;
-
-	// frame holds the rotate speed
-	if(owner->spawnflags & 1) {
-		ent->s.frame = 25;
-	} else if(owner->spawnflags & 2) {
-		ent->s.frame = 75;
-	}
-
-	// clientNum holds the rotate offset
-	ent->s.clientNum = owner->s.clientNum;
-
-	VectorCopy(owner->s.origin, ent->s.origin2);
-
-	// see if the portal_camera has a target
-	target = G_PickTarget(owner->target);
-	if(target) {
-		VectorSubtract(target->s.origin, owner->s.origin, dir);
-		VectorNormalize(dir);
-	} else {
-		G_SetMovedir(owner->s.angles, dir);
-	}
-
-	ent->s.eventParm = DirToByte(dir);
-}
-
-void SP_misc_portal_surface(gentity_t* ent) {
-	VectorClear(ent->r.mins);
-	VectorClear(ent->r.maxs);
-	trap_LinkEntity(ent);
-
-	ent->r.svFlags = SVF_PORTAL;
-	ent->s.eType = ET_PORTAL;
-
-	if(!ent->target) {
-		VectorCopy(ent->s.origin, ent->s.origin2);
-	} else {
-		ent->think = locateCamera;
-		ent->nextthink = level.time + 100;
-	}
-}
-
-void SP_misc_portal_camera(gentity_t* ent) {
-	float roll;
-
-	VectorClear(ent->r.mins);
-	VectorClear(ent->r.maxs);
-	trap_LinkEntity(ent);
-
-	G_SpawnFloat("roll", "0", &roll);
-
-	ent->s.clientNum = roll / 360.0 * 256;
-}

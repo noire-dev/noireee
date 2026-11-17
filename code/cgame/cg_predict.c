@@ -67,7 +67,7 @@ void CG_BuildSolidList(void) {
 		cent = &cg_entities[snap->entities[i].number];
 		ent = &cent->currentState;
 
-		if(ent->eType == ET_ITEM || BG_IsItemEntity(ent) || ent->eType == ET_TELEPORT_TRIGGER) {
+		if(BG_IsItemEntity(ent) || ent->eType == ET_TELEPORT_TRIGGER) {
 			cg_triggerEntities[cg_numTriggerEntities] = cent;
 			cg_numTriggerEntities++;
 			continue;
@@ -291,7 +291,7 @@ static void CG_TouchTriggerPrediction(void) {
 		cent = cg_triggerEntities[i];
 		ent = &cent->currentState;
 
-		if(ent->eType == ET_ITEM || BG_IsItemEntity(ent)) {
+		if(BG_IsItemEntity(ent)) {
 			CG_TouchItem(cent);
 			continue;
 		}

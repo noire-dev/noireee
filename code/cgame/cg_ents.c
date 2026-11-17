@@ -450,37 +450,6 @@ static void CG_Mover(centity_t* cent) {
 }
 
 /*
-===============
-CG_Portal
-===============
-*/
-static void CG_Portal(centity_t* cent) {
-	refEntity_t ent;
-	entityState_t* s1;
-
-	s1 = &cent->currentState;
-
-	// create the render entity
-	memset(&ent, 0, sizeof(ent));
-	VectorCopy(cent->lerpOrigin, ent.origin);
-	VectorCopy(s1->origin2, ent.oldorigin);
-	ByteToDir(s1->eventParm, ent.axis[0]);
-	PerpendicularVector(ent.axis[1], ent.axis[0]);
-
-	// negating this tends to get the directions like they want
-	// we really should have a camera roll value
-	VectorSubtract(vec3_origin, ent.axis[1], ent.axis[1]);
-
-	CrossProduct(ent.axis[0], ent.axis[1], ent.axis[2]);
-	ent.reType = RT_PORTALSURFACE;
-	ent.frame = s1->frame;                      // rotation speed
-	ent.skinNum = s1->clientNum / 256.0 * 360;  // roll offset
-
-	// add to refresh list
-	trap_R_AddRefEntityToScene(&ent);
-}
-
-/*
 ================
 CG_CreateRotationMatrix
 ================
@@ -656,10 +625,9 @@ static void CG_AddCEntity(centity_t* cent) {
 		case ET_PHYSICS: CG_Physics(cent); break;
 		case ET_RAGDOLL: CG_Ragdoll(cent); break;
 		case ET_PLAYER: CG_Player(cent); break;
-		case ET_ITEM: CG_Error("Legacy ET_ITEM entity received"); break;
 		case ET_MISSILE: CG_Missile(cent); break;
 		case ET_MOVER: CG_Mover(cent); break;
-		case ET_PORTAL: CG_Portal(cent); break;
+		case ET_PORTAL: CG_Error("Legacy ET_PORTAL entity received"); break;
 	}
 }
 

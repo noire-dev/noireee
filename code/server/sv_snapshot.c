@@ -447,7 +447,7 @@ static void SV_AddEntToSnapshot(svEntity_t* svEnt, sharedEntity_t* gEnt, snapsho
 	eNums->numSnapshotEntities++;
 }
 
-bool IsEntityVisibleType(sharedEntity_t* ent) { return (ent->s.eType == ET_PORTAL); }
+bool IsEntityVisibleType(sharedEntity_t* ent) { return false; }
 
 /*
 ===============
@@ -794,8 +794,7 @@ static void SV_BuildClientSnapshot(client_t* client) {
 			for(i = 0; i < entityNumbers.numSnapshotEntities; i++) {
 				entityNum = entityNumbers.snapshotEntities[i];
 				ent = SV_GentityNum(entityNum);
-				if(!svSnapshotOldStateValid[entityNum] ||
-				   memcmp(&svSnapshotOldStates[entityNum], &ent->s, sizeof(ent->s)) != 0) {
+				if(!svSnapshotOldStateValid[entityNum] || memcmp(&svSnapshotOldStates[entityNum], &ent->s, sizeof(ent->s)) != 0) {
 					svSnapshotNeedsUpdate[entityNum] = 1;
 				}
 			}
@@ -840,12 +839,11 @@ static void SV_BuildClientSnapshot(client_t* client) {
 			ent = SV_GentityNum(entityNum);
 
 			if(oldframe && !svSnapshotOldStateValid[entityNum] && !svSnapshotSelected[entityNum]) {
-				continue; // new entity, defer its first appearance until budget is available
+				continue;  // new entity, defer its first appearance until budget is available
 			}
 
 			state = &svs.snapshotEntities[svs.nextSnapshotEntities % svs.numSnapshotEntities];
-			if(oldframe && svSnapshotOldStateValid[entityNum] &&
-			   svSnapshotNeedsUpdate[entityNum] && !svSnapshotSelected[entityNum]) {
+			if(oldframe && svSnapshotOldStateValid[entityNum] && svSnapshotNeedsUpdate[entityNum] && !svSnapshotSelected[entityNum]) {
 				*state = svSnapshotOldStates[entityNum];
 			} else {
 				*state = ent->s;

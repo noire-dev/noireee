@@ -259,7 +259,7 @@ bool G_MoverPush(gentity_t* pusher, vec3_t move, vec3_t amove, gentity_t** obsta
 		check = &g_entities[entityList[e]];
 
 		// only push items and players
-		if(check->s.eType != ET_PLAYER && check->s.eType != ET_ITEM && !BG_IsItemEntity(&check->s)) {
+		if(check->s.eType != ET_PLAYER && !BG_IsItemEntity(&check->s)) {
 			continue;
 		}
 

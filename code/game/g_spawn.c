@@ -117,60 +117,53 @@ void SP_func_portal_in(gentity_t* ent);
 void SP_func_portal_out(gentity_t* ent);
 void SP_func_door(gentity_t* ent);
 void SP_func_train(gentity_t* ent);
-void SP_func_timer(gentity_t* self);
 
 void SP_trigger_always(gentity_t* ent);
 void SP_trigger_multiple(gentity_t* ent);
 void SP_trigger_teleport(gentity_t* ent);
 void SP_trigger_hurt(gentity_t* ent);
 
-void SP_light(gentity_t* self);
-void SP_info_null(gentity_t* self);
-void SP_info_notnull(gentity_t* self);
+void SP_null(gentity_t* self);
+void SP_notnull(gentity_t* self);
 void SP_path_corner(gentity_t* self);
 
 void SP_misc_teleporter_dest(gentity_t* self);
-void SP_misc_model(gentity_t* ent);
-void SP_misc_portal_camera(gentity_t* ent);
-void SP_misc_portal_surface(gentity_t* ent);
 
-spawn_t spawns[] = {// info entities don't do anything at all, but provide positional
-                    // information for things controlled by other processes
+spawn_t spawns[] = {// info entities don't do anything at all, but provide positional information for things controlled by other processes
                     {"info_player_start", SP_info_player_start},
                     {"info_player_deathmatch", SP_info_player_deathmatch},
-                    {"info_null", SP_info_null},
-                    {"info_notnull", SP_info_notnull},  // use target_position instead
+                    {"info_null", SP_null},
+                    {"info_notnull", SP_notnull},
 
                     {"func_plat", SP_func_plat},
                     {"func_button", SP_func_button},
-                    {"func_portal_in", SP_func_portal_in},
-                    {"func_portal_out", SP_func_portal_out},
                     {"func_door", SP_func_door},
                     {"func_static", SP_func_static},
                     {"func_rotating", SP_func_rotating},
                     {"func_bobbing", SP_func_bobbing},
                     {"func_pendulum", SP_func_pendulum},
                     {"func_train", SP_func_train},
-                    {"func_group", SP_info_null},
-                    {"func_timer", SP_func_timer},  // rename trigger_timer?
+                    {"func_group", SP_null},
 
-                    // Triggers are brush objects that cause an effect when contacted
-                    // by a living player, usually involving firing targets.
-                    // While almost everything could be done with
-                    // a single trigger class and different targets, triggered effects
-                    // could not be client side predicted (push and teleport).
+                    {"func_portal_in", SP_func_portal_in},
+                    {"func_portal_out", SP_func_portal_out},
+
+                    {"func_volume", SP_null},
+                    {"func_display", SP_null},
+                    {"func_occlusion", SP_null},
+
+                    // Triggers are brush objects that cause an effect when contacted by a living player, usually involving firing targets.
                     {"trigger_always", SP_trigger_always},
                     {"trigger_multiple", SP_trigger_multiple},
                     {"trigger_teleport", SP_trigger_teleport},
                     {"trigger_hurt", SP_trigger_hurt},
 
-                    {"light", SP_light},
+                    {"light", SP_null},
                     {"path_corner", SP_path_corner},
 
                     {"misc_teleporter_dest", SP_misc_teleporter_dest},
-                    {"misc_model", SP_misc_model},
-                    {"misc_portal_surface", SP_misc_portal_surface},
-                    {"misc_portal_camera", SP_misc_portal_camera},
+                    {"misc_model", SP_null},
+                    {"misc_skybox", SP_notnull},
 
                     {NULL, 0}};
 

@@ -139,7 +139,7 @@ typedef struct {
 	// these will be different functions during game and cgame
 	void (*trace)(trace_t* results, const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, int passEntityNum, int contentMask);
 	int (*pointcontents)(const vec3_t point, int passEntityNum);
-	bool (*entityIsPhysics)(int entityNum); // true only for ET_PHYSICS entities
+	bool (*entityIsPhysics)(int entityNum);  // true only for ET_PHYSICS entities
 } pmove_t;
 
 // if a full pmove isn't done on the client, you can just update the angles
@@ -461,14 +461,12 @@ typedef enum {
 	ET_GENERAL,
 	ET_PHYSICS,
 	ET_PLAYER,
-	ET_ITEM,
 	ET_MISSILE,
 	ET_MOVER,
 	ET_PORTAL,
-	ET_SPEAKER,
 	ET_TELEPORT_TRIGGER,
 	ET_INVISIBLE,
-	ET_RAGDOLL,  // master entity of a server-side ragdoll: origin = main bone, ragdollID selects the ragdollState
+	ET_RAGDOLL,
 
 	ET_EVENTS  // any of the EV_* events can be added freestanding
 	           // by setting eType to ET_EVENTS + eventNum
@@ -484,7 +482,6 @@ void BG_PlayerStateToEntityState(playerState_t* ps, entityState_t* s, bool snap)
 void BG_PlayerStateToEntityStateExtraPolate(playerState_t* ps, entityState_t* s, int time, bool snap);
 
 bool BG_PlayerTouchesItem(playerState_t* ps, entityState_t* item, int atTime);
-
 
 //
 // Server-side ragdoll, simplified skeleton.
