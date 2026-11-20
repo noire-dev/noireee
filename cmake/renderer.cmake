@@ -25,6 +25,7 @@ set(RENDERER_GL2_SOURCES
     ${SOURCE_DIR}/renderer/tr_model_iqm.c
     ${SOURCE_DIR}/renderer/tr_postprocess.c
     ${SOURCE_DIR}/renderer/tr_scene.c
+    ${SOURCE_DIR}/renderer/tr_sound.c
     ${SOURCE_DIR}/renderer/tr_shade.c
     ${SOURCE_DIR}/renderer/tr_shade_calc.c
     ${SOURCE_DIR}/renderer/tr_shader.c

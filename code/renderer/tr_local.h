@@ -1331,6 +1331,25 @@ typedef struct displayInfo_s {
 	bool hideSky;         // ключ "hideSky" "0/1" — отключить sky shader и 3D skybox внутри объёма
 } displayInfo_t;
 
+// func_soundscape: эффекты и звуки области, задаются ключами энтити
+typedef struct {
+	char name[32];  // имя эффекта звуковой системы: effect_<name> / effect_local_<name> / effect_3d_<name>
+	char value[64];
+	bool local, d3;  // какие группы звуков затрагивает
+} sndEffect_t;
+
+typedef struct {
+	int numEffects;
+	sndEffect_t* effects;
+	soundscape_t def;
+} soundEnt_t;
+
+typedef struct {
+	vec3_t bounds[2];  // AABB одного brush-а
+	float volume;      // из пересекающихся областей побеждает самая маленькая (вложенная зона важнее общей)
+	int ent;
+} soundRegion_t;
+
 /*
  * Renderer-owned portal endpoints read from the BSP entity lump. `func_portal_in`
  * brush models are paired with `func_portal_out`; `func_portal_mirror` uses
@@ -1394,6 +1413,12 @@ typedef struct {
 	displayInfo_t* displays;
 	int numPortals;
 	portalInfo_t* portals;
+
+	// func_soundscape (tr_sound.c)
+	int numSoundEnts;
+	soundEnt_t* soundEnts;
+	int numSoundRegions;
+	soundRegion_t* soundRegions;
 
 	// func_occlusion (Hardware Occlusion Queries)
 	int numOccBoxes;
@@ -2101,6 +2126,19 @@ void R_AddFlareSurfaces(void);
 
 // загрузка worldspawn ("volumeflags"), misc_skybox / func_volume / func_display из энтити-лампы карты
 void R_LoadMapEntitySystems(void);
+
+// разбор энтити-лампы карты (tr_bsp.c), общий для всех func_* систем
+#define MAX_MAP_ENTITY_KEYS 256
+#define MAX_MAP_ENTITY_VALUENAME 256
+int R_ParseEntityKeys(char** p, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME]);
+const char* R_EntityValue(int numKeys, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], const char* key);
+
+// func_soundscape (tr_sound.c)
+void R_LoadSoundZones(world_t* w);
+void R_SoundZonesShutdown(void);
+void RE_SetSoundEffect(const char* name, const char* value, bool applyLocal, bool apply3D);
+void RE_SoundZones(const vec3_t origin);
+bool RE_GetSoundscape(soundscape_t* out);
 // true, если точка попадает в одну из отдельных brush-областей func_volume с VOLUME_SKY
 bool R_PointInSkyGroupVolume(const world_t* world, const vec3_t point);
 // назначение volumeFlags поверхностям мира по отдельным brush-областям func_volume

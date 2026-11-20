@@ -138,6 +138,32 @@ void S_StopAllSounds(void) {
 	}
 }
 
+// volume / radius variants; backends without support (DMA) fall back to the plain call
+void S_StartSoundEx(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx, float volume, float radius) {
+	if(si.StartSoundEx)
+		si.StartSoundEx(origin, entnum, entchannel, sfx, volume, radius);
+	else
+		S_StartSound(origin, entnum, entchannel, sfx);
+}
+
+void S_StartLocalSoundEx(sfxHandle_t sfx, int channelNum, float volume) {
+	if(si.StartLocalSoundEx)
+		si.StartLocalSoundEx(sfx, channelNum, volume);
+	else
+		S_StartLocalSound(sfx, channelNum);
+}
+
+void S_AddLoopingSoundEx(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx, float volume, float radius) {
+	if(si.AddLoopingSoundEx)
+		si.AddLoopingSoundEx(entityNum, origin, velocity, sfx, volume, radius);
+	else
+		S_AddLoopingSound(entityNum, origin, velocity, sfx);
+}
+
+void S_AddLocalLoop(sfxHandle_t sfx, float volume) {
+	if(si.AddLocalLoop) si.AddLocalLoop(sfx, volume);
+}
+
 /*
 =================
 S_ClearLoopingSounds

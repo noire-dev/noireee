@@ -24,6 +24,12 @@ void trap_CM_CapsuleTrace(trace_t* results, const vec3_t start, const vec3_t end
 void trap_CM_TransformedBoxTrace(trace_t* results, const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs, clipHandle_t model, int brushmask, const vec3_t origin, const vec3_t angles) { syscall(TRAP_CM_TRANSFORMEDBOXTRACE, results, start, end, mins, maxs, model, brushmask, origin, angles); }
 void trap_CM_TransformedCapsuleTrace(trace_t* results, const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs, clipHandle_t model, int brushmask, const vec3_t origin, const vec3_t angles) { syscall(TRAP_CM_TRANSFORMEDCAPSULETRACE, results, start, end, mins, maxs, model, brushmask, origin, angles); }
 void trap_S_StartLocalSound(sfxHandle_t sfx, int channelNum) { syscall(TRAP_S_STARTLOCALSOUND, sfx, channelNum); }
+void trap_S_StartSoundEx(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx, float volume, float radius) { syscall(TRAP_S_STARTSOUNDEX, origin, entnum, entchannel, sfx, PASSFLOAT(volume), PASSFLOAT(radius)); }
+void trap_S_StartLocalSoundEx(sfxHandle_t sfx, int channelNum, float volume) { syscall(TRAP_S_STARTLOCALSOUNDEX, sfx, channelNum, PASSFLOAT(volume)); }
+void trap_S_AddLoopingSoundEx(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx, float volume, float radius) { syscall(TRAP_S_ADDLOOPINGSOUNDEX, entityNum, origin, velocity, sfx, PASSFLOAT(volume), PASSFLOAT(radius)); }
+void trap_S_AddLocalLoop(sfxHandle_t sfx, float volume) { syscall(TRAP_S_ADDLOCALLOOP, sfx, PASSFLOAT(volume)); }
+void trap_R_SetSoundEffect(const char* name, const char* value, bool applyLocal, bool apply3D) { syscall(TRAP_R_SETSOUNDEFFECT, name, value, applyLocal, apply3D); }
+bool trap_R_GetSoundscape(soundscape_t* out) { return syscall(TRAP_R_GETSOUNDSCAPE, out); }
 void trap_Key_KeynumToStringBuf(int keynum, char* buf, int buflen) { syscall(TRAP_KEY_KEYNUMTOSTRINGBUF, keynum, buf, buflen); }
 void trap_Key_GetBindingBuf(int keynum, char* buf, int buflen) { syscall(TRAP_KEY_GETBINDINGBUF, keynum, buf, buflen); }
 bool trap_Key_IsDown(int keynum) { return syscall(TRAP_KEY_ISDOWN, keynum); }

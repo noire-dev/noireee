@@ -24,6 +24,12 @@ case TRAP_CM_CAPSULETRACE: CM_BoxTrace(VMA(1), VMA(2), VMA(3), VMA(4), VMA(5), a
 case TRAP_CM_TRANSFORMEDBOXTRACE: CM_TransformedBoxTrace(VMA(1), VMA(2), VMA(3), VMA(4), VMA(5), args[6], args[7], VMA(8), VMA(9), /*int capsule*/ false); return 0;
 case TRAP_CM_TRANSFORMEDCAPSULETRACE: CM_TransformedBoxTrace(VMA(1), VMA(2), VMA(3), VMA(4), VMA(5), args[6], args[7], VMA(8), VMA(9), /*int capsule*/ true); return 0;
 case TRAP_S_STARTLOCALSOUND: S_StartLocalSound(args[1], args[2]); return 0;
+case TRAP_S_STARTSOUNDEX: S_StartSoundEx(VMA(1), args[2], args[3], args[4], VMF(5), VMF(6)); return 0;
+case TRAP_S_STARTLOCALSOUNDEX: S_StartLocalSoundEx(args[1], args[2], VMF(3)); return 0;
+case TRAP_S_ADDLOOPINGSOUNDEX: S_AddLoopingSoundEx(args[1], VMA(2), VMA(3), args[4], VMF(5), VMF(6)); return 0;
+case TRAP_S_ADDLOCALLOOP: S_AddLocalLoop(args[1], VMF(2)); return 0;
+case TRAP_R_SETSOUNDEFFECT: re.SetSoundEffect(VMA(1), VMA(2), args[3] != 0, args[4] != 0); return 0;
+case TRAP_R_GETSOUNDSCAPE: return re.GetSoundscape(VMA(1));
 case TRAP_KEY_KEYNUMTOSTRINGBUF: Key_KeynumToStringBuf(args[1], VMA(2), args[3]); return 0;
 case TRAP_KEY_GETBINDINGBUF: Key_GetBindingBuf(args[1], VMA(2), args[3]); return 0;
 case TRAP_KEY_ISDOWN: return Key_IsDown(args[1]);

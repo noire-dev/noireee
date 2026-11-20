@@ -1129,6 +1129,8 @@ RE_Shutdown
 void RE_Shutdown(bool destroyWindow) {
 	ri.Printf(PRINT_ALL, "RE_Shutdown( %i )\n", destroyWindow);
 
+	R_SoundZonesShutdown();
+
 	ri.Cmd_RemoveCommand("imagelist");
 	ri.Cmd_RemoveCommand("shaderlist");
 	ri.Cmd_RemoveCommand("skinlist");
@@ -1240,6 +1242,9 @@ refexport_t* GetRefAPI(int apiVersion, refimport_t* rimp) {
 
 	re.RemapShader = R_RemapShader;
 	re.GetEntityToken = R_GetEntityToken;
+	re.SetSoundEffect = RE_SetSoundEffect;
+	re.SoundZones = RE_SoundZones;
+	re.GetSoundscape = RE_GetSoundscape;
 
 	re.TakeVideoFrame = RE_TakeVideoFrame;
 

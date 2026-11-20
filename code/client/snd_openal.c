@@ -499,6 +499,9 @@ typedef struct src_s {
 	vec3_t loopSpeakerPos;  // Origin of the loop speaker
 
 	bool local;  // Is this local (relative to the cam)
+
+	float volume;  // gain multiplier requested by the game (1 = normal)
+	float radius;  // distance at which the sound becomes inaudible (0 = s_alMaxDistance)
 } src_t;
 
 #ifdef __APPLE__
@@ -522,6 +525,7 @@ typedef struct sentity_s {
 	bool loopAddedThisFrame;
 	alSrcPriority_t loopPriority;
 	sfxHandle_t loopSfx;
+	float loopVolume, loopRadius;
 	bool startLoopingSound;
 } sentity_t;
 
@@ -565,29 +569,23 @@ Adapt the gain if necessary to get a quicker fadeout when the source is too far 
 */
 
 static void S_AL_ScaleGain(src_t* chksrc, vec3_t origin) {
-	float distance = 0.0f;
+	float gain = chksrc->curGain * chksrc->volume;
 
-	if(!chksrc->local) distance = Distance(origin, lastListenerOrigin);
+	// positional sounds: full volume inside min distance, falling to silence at the radius
+	if(!chksrc->local) {
+		float r = chksrc->radius > 0 ? chksrc->radius : s_alMaxDistance->value;
+		float r0 = s_alMinDistance->value < r * 0.25f ? s_alMinDistance->value : r * 0.25f;
+		float d = Distance(origin, lastListenerOrigin);
 
-	// If we exceed a certain distance, scale the gain linearly until the sound
-	// vanishes into nothingness.
-	if(!chksrc->local && (distance -= s_alMaxDistance->value) > 0) {
-		float scaleFactor;
+		if(d >= r)
+			gain = 0.0f;
+		else if(d > r0)
+			gain *= powf(1.0f - (d - r0) / (r - r0), s_alRolloff->value);
+	}
 
-		if(distance >= s_alGraceDistance->value)
-			scaleFactor = 0.0f;
-		else
-			scaleFactor = 1.0f - distance / s_alGraceDistance->value;
-
-		scaleFactor *= chksrc->curGain;
-
-		if(chksrc->scaleGain != scaleFactor) {
-			chksrc->scaleGain = scaleFactor;
-			S_AL_Gain(chksrc->alSource, chksrc->scaleGain);
-		}
-	} else if(chksrc->scaleGain != chksrc->curGain) {
-		chksrc->scaleGain = chksrc->curGain;
-		S_AL_Gain(chksrc->alSource, chksrc->scaleGain);
+	if(chksrc->scaleGain != gain) {
+		chksrc->scaleGain = gain;
+		S_AL_Gain(chksrc->alSource, gain);
 	}
 }
 
@@ -705,6 +703,9 @@ static void S_AL_SrcSetup(srcHandle_t src, sfxHandle_t sfx, alSrcPriority_t prio
 	curSource->curGain = s_alGain->value * s_volume->value;
 	curSource->scaleGain = curSource->curGain;
 	curSource->local = local;
+	curSource->volume = 1.0f;
+	curSource->radius = 0.0f;
+	S_FX_Reset(curSource - srcList);
 
 	// Set up OpenAL source
 	if(sfx >= 0) {
@@ -720,13 +721,9 @@ static void S_AL_SrcSetup(srcHandle_t src, sfxHandle_t sfx, alSrcPriority_t prio
 	qalSourcei(curSource->alSource, AL_LOOPING, AL_FALSE);
 	qalSourcef(curSource->alSource, AL_REFERENCE_DISTANCE, s_alMinDistance->value);
 
-	if(local) {
-		qalSourcei(curSource->alSource, AL_SOURCE_RELATIVE, AL_TRUE);
-		qalSourcef(curSource->alSource, AL_ROLLOFF_FACTOR, 0.0f);
-	} else {
-		qalSourcei(curSource->alSource, AL_SOURCE_RELATIVE, AL_FALSE);
-		qalSourcef(curSource->alSource, AL_ROLLOFF_FACTOR, s_alRolloff->value);
-	}
+	// distance attenuation is done in S_AL_ScaleGain (per-sound radius), OpenAL only pans
+	qalSourcef(curSource->alSource, AL_ROLLOFF_FACTOR, 0.0f);
+	qalSourcei(curSource->alSource, AL_SOURCE_RELATIVE, local ? AL_TRUE : AL_FALSE);
 }
 
 /*
@@ -1030,7 +1027,7 @@ S_AL_StartLocalSound
 Play a local (non-spatialized) sound effect
 =================
 */
-static void S_AL_StartLocalSound(sfxHandle_t sfx, int channel) {
+static void S_AL_StartLocalSoundEx(sfxHandle_t sfx, int channel, float volume) {
 	srcHandle_t src;
 
 	if(S_AL_CheckInput(0, sfx)) return;
@@ -1042,11 +1039,16 @@ static void S_AL_StartLocalSound(sfxHandle_t sfx, int channel) {
 
 	// Set up the effect
 	S_AL_SrcSetup(src, sfx, SRCPRI_LOCAL, -1, channel, true);
+	srcList[src].volume = volume;
+	S_AL_ScaleGain(&srcList[src], vec3_origin);
+	S_FX_Source(src, srcList[src].alSource, true, NULL);
 
 	// Start it playing
 	srcList[src].isPlaying = true;
 	qalSourcePlay(srcList[src].alSource);
 }
+
+static void S_AL_StartLocalSound(sfxHandle_t sfx, int channel) { S_AL_StartLocalSoundEx(sfx, channel, 1.0f); }
 
 /*
 =================
@@ -1055,7 +1057,7 @@ S_AL_StartSound
 Play a one-shot sound effect
 =================
 */
-static void S_AL_StartSound(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx) {
+static void S_AL_StartSoundEx(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx, float volume, float radius) {
 	vec3_t sorigin;
 	srcHandle_t src;
 	src_t* curSource;
@@ -1068,7 +1070,7 @@ static void S_AL_StartSound(vec3_t origin, int entnum, int entchannel, sfxHandle
 		if(S_AL_CheckInput(entnum, sfx)) return;
 
 		if(S_AL_HearingThroughEntity(entnum)) {
-			S_AL_StartLocalSound(sfx, entchannel);
+			S_AL_StartLocalSoundEx(sfx, entchannel, volume);
 			return;
 		}
 
@@ -1077,7 +1079,7 @@ static void S_AL_StartSound(vec3_t origin, int entnum, int entchannel, sfxHandle
 
 	S_AL_SanitiseVector(sorigin);
 
-	if((srcActiveCnt > 5 * srcCount / 3) && (DistanceSquared(sorigin, lastListenerOrigin) >= (s_alMaxDistance->value + s_alGraceDistance->value) * (s_alMaxDistance->value + s_alGraceDistance->value))) {
+	if((srcActiveCnt > 5 * srcCount / 3) && (DistanceSquared(sorigin, lastListenerOrigin) >= (radius > 0 ? radius : s_alMaxDistance->value) * (radius > 0 ? radius : s_alMaxDistance->value))) {
 		// We're getting tight on sources and source is not within hearing distance so don't add it
 		return;
 	}
@@ -1092,13 +1094,20 @@ static void S_AL_StartSound(vec3_t origin, int entnum, int entchannel, sfxHandle
 
 	if(!origin) curSource->isTracking = true;
 
+	curSource->volume = volume;
+	curSource->radius = radius;
+	VectorCopy(sorigin, curSource->loopSpeakerPos);
+
 	qalSourcefv(curSource->alSource, AL_POSITION, sorigin);
 	S_AL_ScaleGain(curSource, sorigin);
+	S_FX_Source(src, curSource->alSource, false, sorigin);
 
 	// Start it playing
 	curSource->isPlaying = true;
 	qalSourcePlay(curSource->alSource);
 }
+
+static void S_AL_StartSound(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx) { S_AL_StartSoundEx(origin, entnum, entchannel, sfx, 1.0f, 0.0f); }
 
 /*
 =================
@@ -1117,7 +1126,7 @@ static void S_AL_ClearLoopingSounds(bool killall) {
 S_AL_SrcLoop
 =================
 */
-static void S_AL_SrcLoop(alSrcPriority_t priority, sfxHandle_t sfx, const vec3_t origin, const vec3_t velocity, int entityNum) {
+static void S_AL_SrcLoop(alSrcPriority_t priority, sfxHandle_t sfx, const vec3_t origin, const vec3_t velocity, int entityNum, float volume, float radius) {
 	int src;
 	sentity_t* sent = &entityList[entityNum];
 	src_t* curSource;
@@ -1153,6 +1162,8 @@ static void S_AL_SrcLoop(alSrcPriority_t priority, sfxHandle_t sfx, const vec3_t
 
 	sent->loopPriority = priority;
 	sent->loopSfx = sfx;
+	sent->loopVolume = volume;
+	sent->loopRadius = radius;
 
 	// If this is not set then the looping sound is stopped.
 	sent->loopAddedThisFrame = true;
@@ -1199,14 +1210,15 @@ static void S_AL_SrcLoop(alSrcPriority_t priority, sfxHandle_t sfx, const vec3_t
 S_AL_AddLoopingSound
 =================
 */
-static void S_AL_AddLoopingSound(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx) { S_AL_SrcLoop(SRCPRI_ENTITY, sfx, origin, velocity, entityNum); }
+static void S_AL_AddLoopingSoundEx(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx, float volume, float radius) { S_AL_SrcLoop(SRCPRI_ENTITY, sfx, origin, velocity, entityNum, volume, radius); }
+static void S_AL_AddLoopingSound(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx) { S_AL_SrcLoop(SRCPRI_ENTITY, sfx, origin, velocity, entityNum, 1.0f, 0.0f); }
 
 /*
 =================
 S_AL_AddRealLoopingSound
 =================
 */
-static void S_AL_AddRealLoopingSound(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx) { S_AL_SrcLoop(SRCPRI_AMBIENT, sfx, origin, velocity, entityNum); }
+static void S_AL_AddRealLoopingSound(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx) { S_AL_SrcLoop(SRCPRI_AMBIENT, sfx, origin, velocity, entityNum, 1.0f, 0.0f); }
 
 /*
 =================
@@ -1240,7 +1252,6 @@ static void S_AL_SrcUpdate(void) {
 
 		// Update source parameters
 		if((s_alGain->modified) || (s_volume->modified)) curSource->curGain = s_alGain->value * s_volume->value;
-		if((s_alRolloff->modified) && (!curSource->local)) qalSourcef(curSource->alSource, AL_ROLLOFF_FACTOR, s_alRolloff->value);
 		if(s_alMinDistance->modified) qalSourcef(curSource->alSource, AL_REFERENCE_DISTANCE, s_alMinDistance->value);
 
 		if(curSource->isLooping) {
@@ -1271,6 +1282,8 @@ static void S_AL_SrcUpdate(void) {
 
 				curSfx = &knownSfx[curSource->sfx];
 
+				curSource->volume = sent->loopVolume;
+				curSource->radius = sent->loopRadius;
 				S_AL_ScaleGain(curSource, curSource->loopSpeakerPos);
 				if(!curSource->scaleGain) {
 					if(curSource->isPlaying) {
@@ -1286,6 +1299,7 @@ static void S_AL_SrcUpdate(void) {
 
 				if(!curSource->isPlaying) {
 					qalSourcei(curSource->alSource, AL_LOOPING, AL_TRUE);
+					S_FX_Source(i, curSource->alSource, curSource->local, curSource->local ? NULL : curSource->loopSpeakerPos);
 					curSource->isPlaying = true;
 					qalSourcePlay(curSource->alSource);
 
@@ -1340,13 +1354,7 @@ static void S_AL_SrcUpdate(void) {
 				}
 
 				// Update locality
-				if(curSource->local) {
-					qalSourcei(curSource->alSource, AL_SOURCE_RELATIVE, AL_TRUE);
-					qalSourcef(curSource->alSource, AL_ROLLOFF_FACTOR, 0.0f);
-				} else {
-					qalSourcei(curSource->alSource, AL_SOURCE_RELATIVE, AL_FALSE);
-					qalSourcef(curSource->alSource, AL_ROLLOFF_FACTOR, s_alRolloff->value);
-				}
+				qalSourcei(curSource->alSource, AL_SOURCE_RELATIVE, curSource->local ? AL_TRUE : AL_FALSE);
 
 			} else if(curSource->priority == SRCPRI_AMBIENT) {
 				if(curSource->isPlaying) {
@@ -1376,8 +1384,17 @@ static void S_AL_SrcUpdate(void) {
 		// See if it needs to be moved
 		if(curSource->isTracking && !state) {
 			qalSourcefv(curSource->alSource, AL_POSITION, entityList[entityNum].origin);
-			S_AL_ScaleGain(curSource, entityList[entityNum].origin);
+			VectorCopy(entityList[entityNum].origin, curSource->loopSpeakerPos);
 		}
+	}
+
+	// every frame: distance attenuation of one-shots (listener moves) and effects routing of all playing sources
+	for(i = 0; i < srcCount; i++) {
+		curSource = &srcList[i];
+		if(!curSource->isActive || curSource->isLocked || curSource->isStream || !curSource->isPlaying) continue;
+
+		if(!curSource->isLooping) S_AL_ScaleGain(curSource, curSource->loopSpeakerPos);  // loops are scaled above
+		S_FX_Source(i, curSource->alSource, curSource->local, curSource->local ? NULL : curSource->loopSpeakerPos);
 	}
 }
 
@@ -1891,11 +1908,109 @@ static cvar_t* s_alCapture;
 
 /*
 =================
+Ambient layers (soundscape)
+
+Persistent non-positional loops with their own fade in/out. They are keyed by sfx, live
+outside the entity / loop-master system, and have nothing to do with the /music track.
+The game calls S_AddLocalLoop() every frame; a layer that is not refreshed fades out and dies.
+=================
+*/
+typedef struct ambLoop_s {
+	struct ambLoop_s* next;
+	sfxHandle_t sfx;
+	srcHandle_t src;
+	float gain, target;
+	bool seen;
+} ambLoop_t;
+
+static ambLoop_t* ambList;
+static cvar_t* s_ambientFade;
+
+static void S_AL_AddLocalLoop(sfxHandle_t sfx, float volume) {
+	ambLoop_t* a;
+
+	if(S_AL_CheckInput(0, sfx)) return;
+	for(a = ambList; a; a = a->next)
+		if(a->sfx == sfx) break;
+
+	if(!a) {
+		srcHandle_t src = S_AL_SrcAlloc(SRCPRI_LOCAL, -1, -1);
+		if(src == -1) return;
+
+		S_AL_SrcSetup(src, sfx, SRCPRI_LOCAL, -1, -1, true);
+		S_AL_SrcLock(src);
+		srcList[src].scaleGain = 0.0f;
+		S_AL_Gain(srcList[src].alSource, 0.0f);
+		qalSourcei(srcList[src].alSource, AL_LOOPING, AL_TRUE);
+		S_FX_Source(src, srcList[src].alSource, true, NULL);
+		srcList[src].isPlaying = true;
+		qalSourcePlay(srcList[src].alSource);
+
+		a = Z_Malloc(sizeof(*a));
+		a->sfx = sfx;
+		a->src = src;
+		a->next = ambList;
+		ambList = a;
+	}
+	a->target = volume > 0 ? volume : 0.0f;
+	a->seen = true;
+}
+
+static void S_AL_AmbientUpdate(float dt) {
+	ambLoop_t **pp = &ambList, *a;
+	float step = s_ambientFade->value > 0 ? dt / s_ambientFade->value : 1.0f;
+
+	while((a = *pp)) {
+		src_t* s = &srcList[a->src];
+		float g;
+
+		if(!a->seen) a->target = 0.0f;
+		a->seen = false;
+
+		if(a->gain < a->target)
+			a->gain = a->gain + step > a->target ? a->target : a->gain + step;
+		else
+			a->gain = a->gain - step < a->target ? a->target : a->gain - step;
+
+		if(a->gain <= 0.0f && a->target <= 0.0f) {
+			S_AL_SrcUnlock(a->src);
+			S_AL_SrcKill(a->src);
+			*pp = a->next;
+			Z_Free(a);
+			continue;
+		}
+
+		g = s_alGain->value * s_volume->value * a->gain;
+		if(s->scaleGain != g) {
+			s->scaleGain = g;
+			S_AL_Gain(s->alSource, g);
+		}
+		S_FX_Source(a->src, s->alSource, true, NULL);
+		pp = &a->next;
+	}
+}
+
+// the sources themselves are gone after S_AL_SrcShutup / S_AL_SrcShutdown
+static void S_AL_AmbientKillAll(bool killSources) {
+	ambLoop_t* a;
+	while((a = ambList)) {
+		ambList = a->next;
+		if(killSources) {
+			S_AL_SrcUnlock(a->src);
+			S_AL_SrcKill(a->src);
+		}
+		Z_Free(a);
+	}
+}
+
+/*
+=================
 S_AL_StopAllSounds
 =================
 */
 static void S_AL_StopAllSounds(void) {
 	int i;
+	S_AL_AmbientKillAll(true);
 	S_AL_SrcShutup();
 	S_AL_StopBackgroundTrack();
 	for(i = 0; i < MAX_RAW_STREAMS; i++) S_AL_StreamDie(i);
@@ -1926,6 +2041,7 @@ static void S_AL_Respatialize(int entityNum, const vec3_t origin, vec3_t axis[3]
 
 	lastListenerNumber = entityNum;
 	VectorCopy(sorigin, lastListenerOrigin);
+	S_FX_Listener(sorigin, inwater);
 
 	// Set OpenAL listener paramaters
 	qalListenerfv(AL_POSITION, (ALfloat*)sorigin);
@@ -1948,6 +2064,16 @@ static void S_AL_Update(void) {
 		}
 
 		s_muted->modified = false;
+	}
+
+	// Effects (cvars -> EFX), ambient layers, then normal sources
+	{
+		static int lastTime;
+		int now = Sys_Milliseconds();
+		float dt = (now - lastTime) * 0.001f;
+		lastTime = now;
+		S_FX_Update();
+		S_AL_AmbientUpdate(dt < 0 ? 0 : (dt > 0.25f ? 0.25f : dt));
 	}
 
 	// Update SFX channels
@@ -2090,7 +2216,9 @@ static void S_AL_Shutdown(void) {
 	int i;
 	for(i = 0; i < MAX_RAW_STREAMS; i++) S_AL_StreamDie(i);
 	S_AL_StopBackgroundTrack();
+	S_AL_AmbientKillAll(false);
 	S_AL_SrcShutdown();
+	S_FX_Shutdown();
 	S_AL_BufferShutdown();
 
 	qalcDestroyContext(alContext);
@@ -2231,7 +2359,7 @@ bool S_AL_Init(soundInterface_t* si) {
 	}
 
 	// Create OpenAL context
-	alContext = qalcCreateContext(alDevice, NULL);
+	alContext = qalcCreateContext(alDevice, S_FX_ContextAttribs());
 	if(!alContext) {
 		QAL_Shutdown();
 		qalcCloseDevice(alDevice);
@@ -2243,6 +2371,8 @@ bool S_AL_Init(soundInterface_t* si) {
 	// Initialize sources, buffers, music
 	S_AL_BufferInit();
 	S_AL_SrcInit();
+	S_FX_Init(alDevice, srcCount);
+	s_ambientFade = Cvar_Get("s_ambientFade", "2", CVAR_ARCHIVE);  // seconds soundscape loops take to fade in/out
 
 	// Set up OpenAL parameters (doppler, etc)
 	qalDistanceModel(AL_INVERSE_DISTANCE_CLAMPED);
@@ -2312,6 +2442,10 @@ bool S_AL_Init(soundInterface_t* si) {
 	si->Shutdown = S_AL_Shutdown;
 	si->StartSound = S_AL_StartSound;
 	si->StartLocalSound = S_AL_StartLocalSound;
+	si->StartSoundEx = S_AL_StartSoundEx;
+	si->StartLocalSoundEx = S_AL_StartLocalSoundEx;
+	si->AddLoopingSoundEx = S_AL_AddLoopingSoundEx;
+	si->AddLocalLoop = S_AL_AddLocalLoop;
 	si->StartBackgroundTrack = S_AL_StartBackgroundTrack;
 	si->StopBackgroundTrack = S_AL_StopBackgroundTrack;
 	si->RawSamples = S_AL_RawSamples;

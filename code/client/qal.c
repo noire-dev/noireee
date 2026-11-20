@@ -60,6 +60,7 @@ LPALDELETESOURCES qalDeleteSources;
 LPALISSOURCE qalIsSource;
 LPALSOURCEF qalSourcef;
 LPALSOURCE3F qalSource3f;
+LPALSOURCE3I qalSource3i;
 LPALSOURCEFV qalSourcefv;
 LPALSOURCEI qalSourcei;
 LPALGETSOURCEF qalGetSourcef;
@@ -171,6 +172,7 @@ bool QAL_Init(const char* libname) {
 	qalIsSource = GPA("alIsSource");
 	qalSourcef = GPA("alSourcef");
 	qalSource3f = GPA("alSource3f");
+	qalSource3i = GPA("alSource3i");
 	qalSourcefv = GPA("alSourcefv");
 	qalSourcei = GPA("alSourcei");
 	qalGetSourcef = GPA("alGetSourcef");
@@ -267,6 +269,7 @@ void QAL_Shutdown(void) {
 	qalIsSource = NULL;
 	qalSourcef = NULL;
 	qalSource3f = NULL;
+	qalSource3i = NULL;
 	qalSourcefv = NULL;
 	qalSourcei = NULL;
 	qalGetSourcef = NULL;

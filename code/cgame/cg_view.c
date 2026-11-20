@@ -426,6 +426,45 @@ static int CG_CalcViewValues(void) {
 
 /*
 =================
+CG_Soundscape
+
+func_soundscape under the listener (picked by the renderer): a fading local loop plus up to
+SNDSCAPE_RANDOMS random one-shots. Effects of the zone are applied by the engine on its own.
+=================
+*/
+static void CG_Soundscape(void) {
+	static soundscape_t sc;
+	static int id, next[SNDSCAPE_RANDOMS];
+	static sfxHandle_t loop, rnd[SNDSCAPE_RANDOMS];
+	int i;
+
+	trap_R_GetSoundscape(&sc);
+
+	if(sc.id != id) {  // entered another soundscape: register its sounds and restart the timers
+		id = sc.id;
+		loop = sc.loop[0] ? trap_S_RegisterSound(sc.loop, false) : 0;
+		for(i = 0; i < SNDSCAPE_RANDOMS; i++) {
+			rnd[i] = sc.random[i].sound[0] ? trap_S_RegisterSound(sc.random[i].sound, false) : 0;
+			next[i] = cg.time + 1000 * (sc.random[i].time + random() * sc.random[i].rtime);
+		}
+	}
+	if(!id) return;
+
+	if(loop) trap_S_AddLocalLoop(loop, sc.loopVolume);  // the engine crossfades loops when the soundscape changes
+
+	for(i = 0; i < SNDSCAPE_RANDOMS; i++) {
+		float vmin = sc.random[i].volMin, vmax = sc.random[i].volMax, gap;
+
+		if(!rnd[i] || cg.time < next[i]) continue;
+		trap_S_StartLocalSoundEx(rnd[i], CHAN_AUTO, vmax > vmin ? vmin + random() * (vmax - vmin) : vmin);
+
+		gap = sc.random[i].time + random() * sc.random[i].rtime;
+		next[i] = cg.time + 1000 * (gap > 0.1f ? gap : 0.1f);
+	}
+}
+
+/*
+=================
 CG_DrawActiveFrame
 
 Generates and draws a game scene and status information at the given time.
@@ -529,6 +568,7 @@ void CG_DrawActiveFrame(int serverTime, bool demoPlayback) {
 
 	// update audio positions
 	trap_S_Respatialize(cg.snap->ps.clientNum, cg.refdef.vieworg, cg.refdef.viewaxis, inwater);
+	CG_Soundscape();
 
 	// make sure the lagometerSample and frame timing isn't done twice when in stereo
 	cg.frametime = cg.time - cg.oldTime;

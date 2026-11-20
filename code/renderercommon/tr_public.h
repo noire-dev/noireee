@@ -92,6 +92,11 @@ typedef struct {
 	void (*RemapShader)(const char* oldShader, const char* newShader, const char* offsetTime);
 	bool (*GetEntityToken)(char* buffer, int size);
 
+	// sound zones (func_soundscape): the renderer owns the zones, the sound system is driven by cvars
+	void (*SetSoundEffect)(const char* name, const char* value, bool applyLocal, bool apply3D);
+	void (*SoundZones)(const vec3_t listenerOrigin);  // call every frame with the listener position
+	bool (*GetSoundscape)(soundscape_t* out);
+
 	void (*TakeVideoFrame)(int h, int w, byte* captureBuffer, byte* encodeBuffer, bool motionJpeg);
 	void (*AddPointLightToScene)(const vec3_t origin, float radius, const vec3_t color, float intensity, qhandle_t hShader, bool shadows);
 	void (*AddProjectorToScene)(const vec3_t origin, const vec3_t angles, float fov, float radius, const vec3_t color, float intensity, qhandle_t cookieShader, bool shadows);

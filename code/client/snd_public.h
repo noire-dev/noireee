@@ -27,6 +27,16 @@ void S_Shutdown(void);
 void S_StartSound(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx);
 void S_StartLocalSound(sfxHandle_t sfx, int channelNum);
 
+// volume: gain multiplier (1 = normal). radius: distance in units at which the sound becomes inaudible (0 = s_alMaxDistance).
+// Sounds fade out smoothly towards the radius (s_alRolloff = falloff curve).
+void S_StartSoundEx(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx, float volume, float radius);
+void S_StartLocalSoundEx(sfxHandle_t sfx, int channelNum, float volume);
+void S_AddLoopingSoundEx(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx, float volume, float radius);
+
+// Non-positional loop that lives outside the entity/loop-master system and fades in/out on its own (s_ambientFade).
+// Call every frame with the wanted volume; stop calling and it fades out. Not affected by /music.
+void S_AddLocalLoop(sfxHandle_t sfx, float volume);
+
 void S_StartBackgroundTrack(const char* intro, const char* loop);
 void S_StopBackgroundTrack(void);
 

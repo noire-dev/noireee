@@ -212,8 +212,15 @@ typedef enum {
 	TRAP_R_SETBONEANGLES,
 	TRAP_R_GETMODELBONE,
 	TRAP_R_ADDPOINTLIGHTTOSCENE,
-	TRAP_R_ADDPROJECTORTOSCENE
+	TRAP_R_ADDPROJECTORTOSCENE,
+	TRAP_S_STARTSOUNDEX,
+	TRAP_S_STARTLOCALSOUNDEX,
+	TRAP_S_ADDLOOPINGSOUNDEX,
+	TRAP_S_ADDLOCALLOOP,
+	TRAP_R_SETSOUNDEFFECT,
+	TRAP_R_GETSOUNDSCAPE
 } sharedTraps_t;
+
 
 #include <assert.h>
 #include <math.h>
@@ -292,6 +299,19 @@ typedef int clipHandle_t;
 #define BIG_INFO_VALUE 8192
 
 #define MAX_QPATH 64           // max length of a quake game pathname
+
+// What func_soundscape under the listener asks cgame to play (filled by the renderer, see trap_R_GetSoundscape)
+#define SNDSCAPE_RANDOMS 5
+typedef struct {
+	int id;  // 0 = no soundscape; changes whenever the listener enters a different one
+	char loop[MAX_QPATH];
+	float loopVolume;
+	struct {
+		char sound[MAX_QPATH];
+		float time, rtime;  // next play in time + random(0..rtime) seconds
+		float volMin, volMax;
+	} random[SNDSCAPE_RANDOMS];
+} soundscape_t;
 #define MAX_QEXTENDEDPATH 256  // extended max length of a quake game pathname
 #ifdef PATH_MAX
 #define MAX_OSPATH PATH_MAX

@@ -124,6 +124,11 @@ typedef struct {
 	void (*Shutdown)(void);
 	void (*StartSound)(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx);
 	void (*StartLocalSound)(sfxHandle_t sfx, int channelNum);
+	// optional (OpenAL only): volume / radius / ambient loops
+	void (*StartSoundEx)(vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx, float volume, float radius);
+	void (*StartLocalSoundEx)(sfxHandle_t sfx, int channelNum, float volume);
+	void (*AddLoopingSoundEx)(int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx, float volume, float radius);
+	void (*AddLocalLoop)(sfxHandle_t sfx, float volume);
 	void (*StartBackgroundTrack)(const char* intro, const char* loop);
 	void (*StopBackgroundTrack)(void);
 	void (*RawSamples)(int stream, int samples, int rate, int width, int channels, const byte* data, float volume, int entityNum);
@@ -257,6 +262,17 @@ typedef enum {
 typedef int srcHandle_t;
 
 bool S_AL_Init(soundInterface_t* si);
+
+// snd_fx.c -- EFX sound effects (OpenAL)
+#ifdef USE_OPENAL
+const int* S_FX_ContextAttribs(void);
+bool S_FX_Init(void* alcDevice, int numSources);
+void S_FX_Shutdown(void);
+void S_FX_Listener(const vec3_t origin, int inwater);
+void S_FX_Update(void);
+void S_FX_Reset(int idx);
+void S_FX_Source(int idx, unsigned int alSource, bool local, const vec3_t origin);
+#endif
 
 #ifdef idppc_altivec
 void S_PaintChannelFrom16_altivec(portable_samplepair_t paintbuffer[PAINTBUFFER_SIZE], int snd_vol, channel_t* ch, const sfx_t* sc, int count, int sampleOffset, int bufferOffset);

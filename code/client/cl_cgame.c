@@ -398,7 +398,10 @@ intptr_t CL_CgameSystemCalls(intptr_t* args) {
 		case CG_S_ADDREALLOOPINGSOUND: S_AddRealLoopingSound(args[1], VMA(2), VMA(3), args[4]); return 0;
 		case CG_S_STOPLOOPINGSOUND: S_StopLoopingSound(args[1]); return 0;
 		case CG_S_UPDATEENTITYPOSITION: S_UpdateEntityPosition(args[1], VMA(2)); return 0;
-		case CG_S_RESPATIALIZE: S_Respatialize(args[1], VMA(2), VMA(3), args[4]); return 0;
+		case CG_S_RESPATIALIZE:
+			S_Respatialize(args[1], VMA(2), VMA(3), args[4]);
+			re.SoundZones(VMA(2));  // sound zones/effects follow the listener
+			return 0;
 		case CG_S_STARTBACKGROUNDTRACK: S_StartBackgroundTrack(VMA(1), VMA(2)); return 0;
 		case CG_R_LOADWORLDMAP: re.LoadWorld(VMA(1)); return 0;
 		case CG_R_ADDPOLYSTOSCENE: re.AddPolyToScene(args[1], args[2], VMA(3), args[4]); return 0;

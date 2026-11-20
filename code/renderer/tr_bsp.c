@@ -2096,10 +2096,7 @@ R_ParseEntityKeys
 Возвращает количество ключей, -1 если данные закончились / блок битый.
 =================
 */
-#define MAX_MAP_ENTITY_KEYS 64
-#define MAX_MAP_ENTITY_VALUENAME 256
-
-static int R_ParseEntityKeys(char** p, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME]) {
+int R_ParseEntityKeys(char** p, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME]) {
 	const char* token;
 	int num = 0;
 
@@ -2110,20 +2107,20 @@ static int R_ParseEntityKeys(char** p, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_EN
 	while(1) {
 		token = COM_ParseExt(p, true);
 		if(!*token || *token == '}') break;
-		Q_strncpyz(keys[num], token, MAX_MAP_ENTITY_VALUENAME);
+		Q_strncpyz(keys[num < MAX_MAP_ENTITY_KEYS ? num : MAX_MAP_ENTITY_KEYS - 1], token, MAX_MAP_ENTITY_VALUENAME);
 
 		token = COM_ParseExt(p, true);
 		if(!*token || *token == '}') break;
-		Q_strncpyz(values[num], token, MAX_MAP_ENTITY_VALUENAME);
+		Q_strncpyz(values[num < MAX_MAP_ENTITY_KEYS ? num : MAX_MAP_ENTITY_KEYS - 1], token, MAX_MAP_ENTITY_VALUENAME);
 
-		num++;
-		if(num >= MAX_MAP_ENTITY_KEYS) break;
+		// лишние ключи читаем до закрывающей скобки, но не храним: блок никогда не рвётся посередине
+		if(num < MAX_MAP_ENTITY_KEYS) num++;
 	}
 
 	return num;
 }
 
-static const char* R_EntityValue(int numKeys, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], const char* key) {
+const char* R_EntityValue(int numKeys, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], const char* key) {
 	int i;
 
 	for(i = 0; i < numKeys; i++) {
@@ -3386,6 +3383,7 @@ void RE_LoadWorldMap(const char* name) {
 	// из энтити-лампы, затем разметка world-поверхностей группами объёмов
 	R_LoadMapEntitySystems();
 	R_AssignVolumeFlagsToWorldSurfaces();
+	R_LoadSoundZones(&s_worldData);  // func_soundscape
 
 	// determine vertex light directions
 	R_CalcVertexLightDirs();

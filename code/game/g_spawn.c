@@ -150,6 +150,7 @@ spawn_t spawns[] = {// info entities don't do anything at all, but provide posit
                     {"func_portal_mirror", SP_notnull},
 
                     {"func_volume", SP_null},
+                    {"func_soundscape", SP_null},  // renderer-only: effects + ambient sounds
                     {"func_display", SP_null},
                     {"func_occlusion", SP_null},
 
