@@ -169,11 +169,12 @@ cvar_t* r_subdivisions;
 cvar_t* r_fullscreen;
 cvar_t* r_noborder;
 
-cvar_t* r_ambientScale;
-cvar_t* r_directedScale;
-cvar_t* r_dlightScale;
-cvar_t* r_ambientSunFill;
-cvar_t* r_ambientFillLevel;
+cvar_t* r_entAmbientScale;
+cvar_t* r_entDirectedScale;
+cvar_t* r_entAmbientFromDirected;
+cvar_t* r_entLightContrast;
+cvar_t* r_entLightPivot;
+cvar_t* r_entGridLeakRatio;
 
 cvar_t* r_debugSort;
 
@@ -988,11 +989,12 @@ void R_Register(void) {
 	r_gamma = ri.Cvar_Get("r_gamma", "1", CVAR_ARCHIVE);
 	r_renderScale = ri.Cvar_Get("r_renderScale", "100", CVAR_ARCHIVE);
 
-	r_ambientScale = ri.Cvar_Get("r_ambientScale", "0.72", CVAR_CHEAT);
-	r_directedScale = ri.Cvar_Get("r_directedScale", "0.92", CVAR_CHEAT);
-	r_dlightScale = ri.Cvar_Get("r_dlightScale", "12.0", CVAR_ARCHIVE);
-	r_ambientSunFill = ri.Cvar_Get("r_ambientSunFill", "0.64", CVAR_ARCHIVE);
-	r_ambientFillLevel = ri.Cvar_Get("r_ambientFillLevel", "100", CVAR_ARCHIVE);
+	r_entAmbientScale = ri.Cvar_Get("r_entAmbientScale", "0.16", CVAR_CHEAT);
+	r_entDirectedScale = ri.Cvar_Get("r_entDirectedScale", "1.00", CVAR_CHEAT);
+	r_entAmbientFromDirected = ri.Cvar_Get("r_entAmbientFromDirected", "0.64", CVAR_ARCHIVE);
+	r_entLightContrast = ri.Cvar_Get("r_entLightContrast", "1.5", CVAR_ARCHIVE);
+	r_entLightPivot = ri.Cvar_Get("r_entLightPivot", "100", CVAR_ARCHIVE);
+	r_entGridLeakRatio = ri.Cvar_Get("r_entGridLeakRatio", "3.0", CVAR_ARCHIVE);
 
 	// temporary variables that can change at any time
 	r_debugSort = ri.Cvar_Get("r_debugSort", "0", CVAR_CHEAT);

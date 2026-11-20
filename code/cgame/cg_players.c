@@ -716,7 +716,7 @@ void CG_Player(centity_t* cent) {
 	VectorCopy(cent->lerpOrigin, player.lightingOrigin);
 	VectorCopy(player.origin, player.oldorigin);
 	player.origin[2] += MINS_Z;
-	player.lightingOrigin[2] += MINS_Z;
+	player.lightingOrigin[2] -= (MINS_Z * 1.5);
 	player.oldorigin[2] += MINS_Z;
 	player.renderfx = renderfx | RF_LIGHTING_ORIGIN;
 	if(!player.hModel) return;

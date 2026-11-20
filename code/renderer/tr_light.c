@@ -142,18 +142,12 @@ LIGHT SAMPLING
 =============================================================================
 */
 
-extern cvar_t* r_ambientScale;
-extern cvar_t* r_directedScale;
-extern cvar_t* r_dlightScale;
-extern cvar_t* r_ambientSunFill;
-extern cvar_t* r_ambientFillLevel;
+extern cvar_t* r_entAmbientScale;
+extern cvar_t* r_entDirectedScale;
+extern cvar_t* r_entAmbientFromDirected;
+extern cvar_t* r_entLightContrast;
+extern cvar_t* r_entLightPivot;
 
-/*
-=================
-R_SetupEntityLightingGrid
-
-=================
-*/
 static void R_SetupEntityLightingGrid(trRefEntity_t* ent, world_t* world) {
 	vec3_t lightOrigin;
 	int pos[3];
@@ -172,9 +166,6 @@ static void R_SetupEntityLightingGrid(trRefEntity_t* ent, world_t* world) {
 	overrideSunTint = (sunTint[0] != 0.0f || sunTint[1] != 0.0f || sunTint[2] != 0.0f);
 
 	if(ent->e.renderfx & RF_LIGHTING_ORIGIN) {
-		// separate lightOrigins are needed so an object that is
-		// sinking into the ground can still be lit, and so
-		// multi-part models can be lit identically
 		VectorCopy(ent->e.lightingOrigin, lightOrigin);
 	} else {
 		VectorCopy(ent->e.origin, lightOrigin);
@@ -213,9 +204,6 @@ static void R_SetupEntityLightingGrid(trRefEntity_t* ent, world_t* world) {
 		int lat, lng;
 		vec3_t normal;
 		bool sunSample;
-#if idppc
-		float d0, d1, d2, d3, d4, d5;
-#endif
 		factor = 1.0;
 		data = gridData;
 		for(j = 0; j < 3; j++) {
@@ -258,22 +246,7 @@ static void R_SetupEntityLightingGrid(trRefEntity_t* ent, world_t* world) {
 		if(sunSample) VectorCopy(tr.sunDirection, normal);
 
 		totalFactor += factor;
-#if idppc
-		d0 = data[0];
-		d1 = data[1];
-		d2 = data[2];
-		d3 = data[3] * ((sunSample && overrideSunTint) ? sunTint[0] : 1.0f);
-		d4 = data[4] * ((sunSample && overrideSunTint) ? sunTint[1] : 1.0f);
-		d5 = data[5] * ((sunSample && overrideSunTint) ? sunTint[2] : 1.0f);
 
-		ent->ambientLight[0] += factor * d0;
-		ent->ambientLight[1] += factor * d1;
-		ent->ambientLight[2] += factor * d2;
-
-		ent->directedLight[0] += factor * d3;
-		ent->directedLight[1] += factor * d4;
-		ent->directedLight[2] += factor * d5;
-#else
 		if(world->lightGrid16) {
 			// FIXME: this is hideous
 			uint16_t* data16 = world->lightGrid16 + (int)(data - world->lightGridData) / 8 * 6;
@@ -294,7 +267,6 @@ static void R_SetupEntityLightingGrid(trRefEntity_t* ent, world_t* world) {
 			ent->directedLight[1] += factor * data[4] * ((sunSample && overrideSunTint) ? sunTint[1] : 1.0f);
 			ent->directedLight[2] += factor * data[5] * ((sunSample && overrideSunTint) ? sunTint[2] : 1.0f);
 		}
-#endif
 		VectorMA(direction, factor, normal, direction);
 	}
 
@@ -304,8 +276,8 @@ static void R_SetupEntityLightingGrid(trRefEntity_t* ent, world_t* world) {
 		VectorScale(ent->directedLight, totalFactor, ent->directedLight);
 	}
 
-	VectorScale(ent->ambientLight, r_ambientScale->value, ent->ambientLight);
-	VectorScale(ent->directedLight, r_directedScale->value * r_ambientScale->value, ent->directedLight);
+	VectorScale(ent->ambientLight, r_entAmbientScale->value, ent->ambientLight);
+	VectorScale(ent->directedLight, r_entDirectedScale->value * r_entAmbientScale->value, ent->directedLight);
 
 	VectorNormalize2(direction, ent->lightDir);
 }
@@ -343,15 +315,24 @@ void R_SetupEntityLighting(const trRefdef_t* refdef, trRefEntity_t* ent) {
 		VectorCopy(tr.sunDirection, ent->lightDir);
 	}
 
-	if(r_ambientSunFill && r_ambientSunFill->value > 0.0f && !(refdef->rdflags & RDF_NOWORLDMODEL)) {
-		float level = r_ambientFillLevel ? r_ambientFillLevel->value : 100.0f;
-		float dirLum = 0.299f * ent->directedLight[0] + 0.587f * ent->directedLight[1] + 0.114f * ent->directedLight[2];
-		float t = (level > 1.0f) ? Com_Clamp(0.0f, 1.0f, dirLum / level) : 1.0f;
-		float fill = r_ambientSunFill->value * t * t * (3.0f - 2.0f * t);  // smoothstep
+	if(!(refdef->rdflags & RDF_NOWORLDMODEL)) {
+		float contrast = r_entLightContrast->value;
+		float pivot = r_entLightPivot->value;
 
-		ent->ambientLight[0] += ent->directedLight[0] * fill;
-		ent->ambientLight[1] += ent->directedLight[1] * fill;
-		ent->ambientLight[2] += ent->directedLight[2] * fill;
+		// 1) contrast around the pivot level (1 = off)
+		if(contrast != 1.0f && pivot > 1.0f) {
+			float r = ent->ambientLight[0] + ent->directedLight[0];
+			float g = ent->ambientLight[1] + ent->directedLight[1];
+			float b = ent->ambientLight[2] + ent->directedLight[2];
+			float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+			float f = powf(MAX(lum, 1.0f) / pivot, contrast - 1.0f);
+
+			VectorScale(ent->ambientLight, f, ent->ambientLight);
+			VectorScale(ent->directedLight, f, ent->directedLight);
+		}
+
+		// 2) extra ambient derived from the directed light
+		VectorMA(ent->ambientLight, r_entAmbientFromDirected->value, ent->directedLight, ent->ambientLight);
 	}
 
 	// Dynamic lights are added in the additive per-pixel pass. Keeping them
@@ -360,8 +341,6 @@ void R_SetupEntityLighting(const trRefdef_t* refdef, trRefEntity_t* ent) {
 	VectorScale(ent->lightDir, d, lightDir);
 
 	// clamp lights
-	// FIXME: old renderer clamps (ambient + NL * directed) per vertex
-	//        check if that's worth implementing
 	{
 		float r, g, b, max;
 
