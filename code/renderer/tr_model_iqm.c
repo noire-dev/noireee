@@ -525,6 +525,401 @@ iqmAnimation_t* R_LoadIQMAnimation(const char* name) {
 }
 
 /*
+===============================================================================
+BODYGROUPS-BEGIN
+
+<modelname>.cfg — bodygroup / jiggle config of an IQM model.
+
+    bodygroup <group_id> <mesh_name> <option_id> <material_or_hide>
+    jiggle <joint_name> <scale> [damping] [stiffness] [gravity]
+
+group_id: index of the group ("slider"). Groups must be declared from 0 up
+          without gaps. count[g] = max option_id + 1 of the group.
+mesh_name: name of a submesh (surface) of the .iqm.
+option_id: variant index inside the group (0, 1, 2, ...). Option 0 is the
+          default selection (packed == 0).
+material_or_hide: material path ("models/uni/skin.png") or "hide" (the mesh
+          is not rendered at all).
+
+The renderer loads the cfg once per model (like the model itself) and applies
+it for every entity that renders the model, based on the packed int32 the
+entity carries (refEntity_t::bodygroups == entityState_t::bodygroups).
+===============================================================================
+*/
+
+// cfg path of a model: "models/players/uni.iqm" -> "models/players/uni.cfg"
+static void R_IQMBodygroupConfigPath(const char* modName, char* out, int outSize) {
+	Q_strncpyz(out, modName, outSize);
+	COM_StripExtension(modName, out, outSize);
+	Q_strcat(out, outSize, ".cfg");
+}
+
+static int R_IQMFindSurfaceIndex(const iqmData_t* data, const char* meshName) {
+	int i;
+
+	for(i = 0; i < data->num_surfaces; i++) {
+		if(!Q_stricmp(data->surfaces[i].name, meshName)) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static int R_IQMFindJointIndexByName(const iqmData_t* data, const char* name) {
+	const char* names;
+	int i;
+
+	if(!data->jointNames || data->num_joints <= 0 || !name || !name[0]) {
+		return -1;
+	}
+
+	names = data->jointNames;
+	for(i = 0; i < data->num_joints; i++) {
+		if(!strcmp(name, names)) return i;
+		names += strlen(names) + 1;
+	}
+
+	names = data->jointNames;
+	for(i = 0; i < data->num_joints; i++) {
+		if(!Q_stricmp(name, names)) return i;
+		names += strlen(names) + 1;
+	}
+
+	return -1;
+}
+
+/*
+=================
+R_LoadIQMBodygroups
+
+Parse <modelname>.cfg into the hunk-allocated bodygroup / jiggle config of the
+model. A missing cfg is not an error: the model simply has no bodygroups.
+=================
+*/
+static void R_LoadIQMBodygroups(model_t* mod, iqmData_t* iqmData, const char* modName) {
+	char cfgPath[MAX_QPATH];
+	union {
+		char* c;
+		void* v;
+	} buf;
+	int filesize;
+	char* text_p;
+	const char* token;
+	bodygroupLine_t* lines;
+	iqmJiggleCfg_t* jiggles;
+	int groupMaxOption[MAX_MODEL_BODYGROUPS];
+	int numLines, numJiggles, numBodygroups;
+	unsigned int base;
+	int i, j;
+
+	R_IQMBodygroupConfigPath(modName, cfgPath, sizeof(cfgPath));
+
+	filesize = ri.FS_ReadFile(cfgPath, (void**)&buf.v);
+	if(filesize <= 0 || !buf.v) {
+		return;  // no cfg: model has no bodygroups / cfg jiggles
+	}
+
+	lines = (bodygroupLine_t*)ri.Malloc(MAX_MODEL_BODYGROUPS * MAX_MODEL_BODYGROUP_OPTIONS * sizeof(*lines));
+	jiggles = (iqmJiggleCfg_t*)ri.Malloc(MAX_MODEL_JIGGLES * sizeof(*jiggles));
+	numLines = 0;
+	numJiggles = 0;
+	numBodygroups = 0;
+	Com_Memset(groupMaxOption, 0, sizeof(groupMaxOption));
+
+	text_p = buf.c;
+	while((token = COM_Parse(&text_p)) != NULL && token[0]) {
+		if(!Q_stricmp(token, "bodygroup")) {
+			int groupId, optionId, surfaceIndex;
+			char meshName[MAX_QEXTENDEDPATH];
+			char material[MAX_QPATH];
+			shader_t* shader;
+			bool hide;
+
+			token = COM_Parse(&text_p);
+			if(!token[0]) {
+				ri.Printf(PRINT_WARNING, "%s: bodygroup missing group_id\n", cfgPath);
+				break;
+			}
+			groupId = atoi(token);
+			if(groupId < 0 || groupId >= MAX_MODEL_BODYGROUPS) {
+				ri.Printf(PRINT_WARNING, "%s: bodygroup group_id %d out of range 0..%d, line ignored\n", cfgPath, groupId, MAX_MODEL_BODYGROUPS - 1);
+				text_p = strchr(text_p, '\n');
+				if(!text_p) break;
+				continue;
+			}
+
+			token = COM_Parse(&text_p);
+			if(!token[0]) {
+				ri.Printf(PRINT_WARNING, "%s: bodygroup %d missing mesh_name\n", cfgPath, groupId);
+				break;
+			}
+			Q_strncpyz(meshName, token, sizeof(meshName));
+
+			token = COM_Parse(&text_p);
+			if(!token[0]) {
+				ri.Printf(PRINT_WARNING, "%s: bodygroup %d '%s' missing option_id\n", cfgPath, groupId, meshName);
+				break;
+			}
+			optionId = atoi(token);
+			if(optionId < 0 || optionId >= MAX_MODEL_BODYGROUP_OPTIONS) {
+				ri.Printf(PRINT_WARNING, "%s: bodygroup %d '%s' option_id %d out of range 0..%d, line ignored\n", cfgPath, groupId, meshName, optionId, MAX_MODEL_BODYGROUP_OPTIONS - 1);
+				text_p = strchr(text_p, '\n');
+				if(!text_p) break;
+				continue;
+			}
+
+			token = COM_Parse(&text_p);
+			if(!token[0]) {
+				ri.Printf(PRINT_WARNING, "%s: bodygroup %d '%s' option %d missing material_or_hide\n", cfgPath, groupId, meshName, optionId);
+				break;
+			}
+			Q_strncpyz(material, token, sizeof(material));
+			hide = !Q_stricmp(material, "hide");
+
+			shader = NULL;
+			if(!hide) {
+				shader = R_FindShader(material, LIGHTMAP_NONE, true);
+				if(shader->defaultShader) shader = tr.defaultShader;
+			}
+
+			surfaceIndex = R_IQMFindSurfaceIndex(iqmData, meshName);
+			if(surfaceIndex < 0) {
+				ri.Printf(PRINT_WARNING, "%s: mesh '%s' not found in %s, line ignored\n", cfgPath, meshName, modName);
+				continue;
+			}
+
+			if(numLines >= MAX_MODEL_BODYGROUPS * MAX_MODEL_BODYGROUP_OPTIONS) {
+				ri.Printf(PRINT_WARNING, "%s: too many bodygroup lines (max %d), rest ignored\n", cfgPath, MAX_MODEL_BODYGROUPS * MAX_MODEL_BODYGROUP_OPTIONS);
+				break;
+			}
+
+			lines[numLines].group = groupId;
+			lines[numLines].option = optionId;
+			lines[numLines].surfaceIndex = surfaceIndex;
+			lines[numLines].shader = shader;
+			lines[numLines].hide = hide;
+			numLines++;
+
+			if(optionId + 1 > groupMaxOption[groupId]) groupMaxOption[groupId] = optionId + 1;
+			if(groupId + 1 > numBodygroups) numBodygroups = groupId + 1;
+			continue;
+		}
+
+		if(!Q_stricmp(token, "jiggle")) {
+			int jointIndex, cmdLine, param;
+			char* textSave;
+			float values[4];
+
+			token = COM_Parse(&text_p);
+			if(!token[0]) {
+				ri.Printf(PRINT_WARNING, "%s: jiggle missing joint name\n", cfgPath);
+				break;
+			}
+
+			if(iqmData->num_joints <= 0) {
+				ri.Printf(PRINT_WARNING, "%s: model %s has no joints, jiggle line ignored\n", cfgPath, modName);
+				text_p = strchr(text_p, '\n');
+				if(!text_p) break;
+				continue;
+			}
+
+			jointIndex = R_IQMFindJointIndexByName(iqmData, token);
+			if(jointIndex < 0) {
+				ri.Printf(PRINT_WARNING, "%s: joint '%s' not found in %s, jiggle line ignored\n", cfgPath, token, modName);
+				text_p = strchr(text_p, '\n');
+				if(!text_p) break;
+				continue;
+			}
+
+			if(numJiggles >= MAX_MODEL_JIGGLES) {
+				ri.Printf(PRINT_WARNING, "%s: too many jiggle bones (max %d), rest ignored\n", cfgPath, MAX_MODEL_JIGGLES);
+				text_p = strchr(text_p, '\n');
+				if(!text_p) break;
+				continue;
+			}
+
+			Com_Memset(values, 0, sizeof(values));
+			cmdLine = COM_GetCurrentParseLine();
+			for(param = 0; param < 4; param++) {
+				textSave = text_p;
+				token = COM_Parse(&text_p);
+				if(!token[0] || COM_GetCurrentParseLine() != cmdLine) {
+					text_p = textSave;
+					break;
+				}
+				values[param] = (float)atof(token);
+			}
+
+			jiggles[numJiggles].jointIndex = jointIndex;
+			jiggles[numJiggles].scale = values[0];
+			jiggles[numJiggles].damping = values[1] > 0.0f ? values[1] : 0.0f;
+			jiggles[numJiggles].stiffness = values[2] > 0.0f ? values[2] : 0.0f;
+			jiggles[numJiggles].gravity = values[3];
+			numJiggles++;
+			continue;
+		}
+
+		// unknown directive: warn and skip the rest of the line
+		ri.Printf(PRINT_WARNING, "%s: unknown directive '%s', line ignored\n", cfgPath, token);
+		text_p = strchr(text_p, '\n');
+		if(!text_p) break;
+	}
+
+	ri.FS_FreeFile(buf.v);
+
+	// groups must be declared consecutively from 0; a gap ends the config
+	for(i = 0; i < numBodygroups; i++) {
+		if(groupMaxOption[i] <= 0) {
+			ri.Printf(PRINT_WARNING, "%s: bodygroup ids must not skip a group (group %d has no lines), groups >= %d ignored\n", cfgPath, i, i);
+			numBodygroups = i;
+			break;
+		}
+	}
+
+	// the radix product must fit into the signed int32 packed value
+	base = 1;
+	for(i = 0; i < numBodygroups; i++) {
+		if(groupMaxOption[i] > 0 && base > (unsigned int)0x7fffffff / (unsigned int)groupMaxOption[i]) {
+			ri.Printf(PRINT_WARNING, "%s: bodygroup radix product overflows int32, groups >= %d ignored\n", cfgPath, i);
+			numBodygroups = i;
+			break;
+		}
+		base *= (unsigned int)groupMaxOption[i];
+	}
+
+	// drop lines of groups that were cut off by the checks above, so every
+	// remaining line indexes a valid group
+	{
+		int kept = 0;
+
+		for(i = 0; i < numLines; i++) {
+			if(lines[i].group < numBodygroups) {
+				if(kept != i) lines[kept] = lines[i];
+				kept++;
+			}
+		}
+		numLines = kept;
+	}
+
+	if(numBodygroups > 0) {
+		int totalOptions = 0;
+		byte* dataPtr;
+
+		for(i = 0; i < numBodygroups; i++) totalOptions += groupMaxOption[i];
+
+		iqmData->numBodygroups = numBodygroups;
+		iqmData->bodygroups = (bodygroupGroup_t*)ri.Hunk_Alloc(numBodygroups * sizeof(bodygroupGroup_t) + totalOptions * 2 * sizeof(int) + numLines * sizeof(bodygroupLine_t), h_low);
+		iqmData->numBodygroupLines = numLines;
+		iqmData->bodygroupLines = (bodygroupLine_t*)((byte*)iqmData->bodygroups + numBodygroups * sizeof(bodygroupGroup_t));
+
+		dataPtr = (byte*)iqmData->bodygroupLines + numLines * sizeof(bodygroupLine_t);
+		for(i = 0; i < numBodygroups; i++) {
+			bodygroupGroup_t* group = &iqmData->bodygroups[i];
+
+			group->numOptions = groupMaxOption[i];
+			group->optionFirst = (int*)dataPtr;
+			dataPtr += group->numOptions * sizeof(int);
+			group->optionCount = (int*)dataPtr;
+			dataPtr += group->numOptions * sizeof(int);
+
+			Com_Memset(group->optionFirst, 0, group->numOptions * sizeof(int));
+			Com_Memset(group->optionCount, 0, group->numOptions * sizeof(int));
+		}
+
+		// store the lines ordered by (group, option); within one option the
+		// file order is preserved, so multiple meshes of the same option are
+		// applied in the order they were declared
+		{
+			int cursor[MAX_MODEL_BODYGROUPS][MAX_MODEL_BODYGROUP_OPTIONS];
+			int running = 0;
+			int k;
+
+			// pass 1: count the lines per (group, option)
+			for(k = 0; k < numLines; k++) {
+				iqmData->bodygroups[lines[k].group].optionCount[lines[k].option]++;
+			}
+
+			// pass 2: contiguous ranges per option (prefix sums)
+			for(i = 0; i < numBodygroups; i++) {
+				for(j = 0; j < groupMaxOption[i]; j++) {
+					iqmData->bodygroups[i].optionFirst[j] = running;
+					cursor[i][j] = running;
+					running += iqmData->bodygroups[i].optionCount[j];
+				}
+			}
+
+			// pass 3: place the lines in file order (stable per option)
+			for(k = 0; k < numLines; k++) {
+				iqmData->bodygroupLines[cursor[lines[k].group][lines[k].option]++] = lines[k];
+			}
+		}
+	}
+
+	if(numJiggles > 0) {
+		iqmData->numJiggleCfgs = numJiggles;
+		iqmData->jiggleCfgs = (iqmJiggleCfg_t*)ri.Hunk_Alloc(numJiggles * sizeof(iqmJiggleCfg_t), h_low);
+		Com_Memcpy(iqmData->jiggleCfgs, jiggles, numJiggles * sizeof(iqmJiggleCfg_t));
+	}
+
+	ri.Free(lines);
+	ri.Free(jiggles);
+}
+
+/*
+=================
+R_IQMBodygroupOverride
+
+Resolve the bodygroup lines that touch surface 'surfaceIndex' for the packed
+selection 'packed' of the current entity. Returns the material override (NULL
+= keep the mesh's own material) and whether the mesh must be hidden. If
+several groups touch the same mesh, the highest group id wins (cfg authors
+should not do that).
+=================
+*/
+static void R_IQMBodygroupOverride(const iqmData_t* data, int packed, int surfaceIndex, shader_t** shaderOut, bool* hideOut) {
+	int g;
+	unsigned int base;
+
+	*shaderOut = NULL;
+	*hideOut = false;
+
+	if(!data || data->numBodygroups <= 0) return;
+	if(packed < 0) packed = 0;
+
+	// unpack the active option of every group (variable radix, base[0] = 1)
+	base = 1;
+	for(g = 0; g < data->numBodygroups; g++) {
+		const bodygroupGroup_t* group = &data->bodygroups[g];
+		int option, n;
+
+		if(group->numOptions > 1) {
+			option = (packed / (int)base) % group->numOptions;
+
+			for(n = 0; n < group->optionCount[option]; n++) {
+				const bodygroupLine_t* line = &data->bodygroupLines[group->optionFirst[option] + n];
+
+				if(line->surfaceIndex != surfaceIndex) continue;
+
+				if(line->hide) {
+					*hideOut = true;
+					*shaderOut = NULL;
+				} else {
+					*hideOut = false;
+					if(line->shader) *shaderOut = line->shader;
+				}
+			}
+		}
+
+		// same overflow guard as in R_LoadIQMBodygroups: groups whose radix
+		// product no longer fits int32 are ignored
+		if(base > (unsigned int)0x7fffffff / (unsigned int)(group->numOptions > 0 ? group->numOptions : 1)) break;
+		base *= (unsigned int)(group->numOptions > 0 ? group->numOptions : 1);
+	}
+}
+
+// BODYGROUPS-END
+
+/*
 =================
 R_LoadIQM
 
@@ -1246,6 +1641,10 @@ bool R_LoadIQM(model_t* mod, void* buffer, int filesize, const char* mod_name) {
 		}
 	}
 
+	// parse <modelname>.cfg: bodygroups + cfg jiggle bones (must run after the
+	// surfaces and joint names above are filled)
+	R_LoadIQMBodygroups(mod, iqmData, mod_name);
+
 	// Create VAO surfaces
 	if(iqmData->num_surfaces && iqmData->num_joints <= glRefConfig.glslMaxAnimatedBones) {
 		srfVaoIQModel_t* vaoSurf;
@@ -1590,9 +1989,22 @@ void R_AddIQMSurfaces(trRefEntity_t* ent) {
 	fogNum = R_ComputeIQMFogNum(data, ent);
 
 	for(i = 0; i < data->num_surfaces; i++) {
-		if(ent->e.customShader)
+		shader_t* bodygroupShader = NULL;
+		bool bodygroupHidden = false;
+
+		// per-model bodygroup config: hide the mesh or swap its material for
+		// this entity's packed selection (0 = option 0 of every group)
+		if(data->numBodygroups > 0) {
+			R_IQMBodygroupOverride(data, ent->e.bodygroups, i, &bodygroupShader, &bodygroupHidden);
+		}
+
+		if(ent->e.customShader) {
+			// full-entity shader override (e.g. the physgun outline) wins over
+			// the bodygroup material so outlines still show the whole silhouette
 			shader = R_GetShaderByHandle(ent->e.customShader);
-		else if(ent->e.customSkin > 0 && ent->e.customSkin < tr.numSkins) {
+		} else if(bodygroupShader) {
+			shader = bodygroupShader;
+		} else if(ent->e.customSkin > 0 && ent->e.customSkin < tr.numSkins) {
 			skin = R_GetSkinByHandle(ent->e.customSkin);
 			shader = tr.defaultShader;
 
@@ -1614,7 +2026,8 @@ void R_AddIQMSurfaces(trRefEntity_t* ent) {
 
 		if(r_cubeReflectionsEntities->integer) useCubemap = R_ShaderRequiresCubemap(shader);
 
-		if(!personalModel) {
+		// hidden by bodygroups: no draw call at all (also no shadow)
+		if(!bodygroupHidden && !personalModel) {
 			R_AddDrawSurf(drawSurf, shader, fogNum, DlightMask_Any(&ent->needDlights), useCubemap, vec3_origin, 0.0f);
 		}
 
@@ -2213,6 +2626,7 @@ int R_IQMJiggleEntity(const refEntity_t* re, int sceneEntityNum, jiggleEntry_t* 
 			if(!st->valid[i]) {
 				VectorCopy(tipW0, st->pos[i]);
 				VectorClear(st->vel[i]);
+				VectorCopy(jointW, st->jointPos[i]);
 				st->valid[i] = 1;
 				st->jointLastTime[i] = timeMs;
 			}
@@ -2230,6 +2644,7 @@ int R_IQMJiggleEntity(const refEntity_t* re, int sceneEntityNum, jiggleEntry_t* 
 					// velocity
 					VectorCopy(tipW0, st->pos[i]);
 					VectorClear(st->vel[i]);
+					VectorCopy(jointW, st->jointPos[i]);
 					st->jointLastTime[i] = timeMs;
 				} else if(dtMs > 0) {
 					dt = Com_Clamp(0.0f, 0.1f, dtMs * 0.001f);
@@ -2238,6 +2653,13 @@ int R_IQMJiggleEntity(const refEntity_t* re, int sceneEntityNum, jiggleEntry_t* 
 				if(dt > 0.0f) {
 					int steps = (int)ceilf(dt / JIGGLE_SUBSTEP);
 					float h, damp;
+
+					if(r_jiggleMoveModifier->value > 0.0f) {
+						vec3_t mv;
+
+						VectorSubtract(jointW, st->jointPos[i], mv);
+						VectorMA(st->pos[i], r_jiggleMoveModifier->value, mv, st->pos[i]);
+					}
 
 					if(steps < 1) steps = 1;
 					if(steps > JIGGLE_MAX_SUBSTEPS) steps = JIGGLE_MAX_SUBSTEPS;
@@ -2280,6 +2702,7 @@ int R_IQMJiggleEntity(const refEntity_t* re, int sceneEntityNum, jiggleEntry_t* 
 					}
 
 					st->jointLastTime[i] = timeMs;
+					VectorCopy(jointW, st->jointPos[i]);
 					stepped++;
 				} else {
 					// no time passed for this joint (same refdef time, second

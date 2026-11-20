@@ -142,6 +142,9 @@ static void CG_General(centity_t* cent) {
 
 	ent.hModel = cgs.gameModels[s1->modelindex];
 
+	// bodygroups: packed selection of the model's <modelname>.cfg
+	ent.bodygroups = s1->bodygroups;
+
 	// player model
 	if(s1->number == cg.snap->ps.clientNum) {
 		ent.renderfx |= RF_THIRD_PERSON;  // only draw from mirrors
@@ -280,6 +283,9 @@ static void CG_Physics(centity_t* cent) {
 	VectorCopy(cent->lerpOrigin, ent.oldorigin);
 
 	ent.hModel = cgs.gameModels[s1->modelindex];
+
+	// bodygroups: packed selection of the model's <modelname>.cfg (props)
+	ent.bodygroups = s1->bodygroups;
 
 	// Interpolate physics orientation as a quaternion, not as three Euler angles.
 	// The latter can jump when QuatToAngles changes Euler branch near a steep roll.

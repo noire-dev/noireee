@@ -132,6 +132,7 @@ openjs.file("js/color");
 openjs.file("js/command");
 openjs.file("js/hooks");
 openjs.file("js/cgui");
+openjs.file("js/bodygroups"); // getBodygroups() / setBodygroups() for the UI
 openjs.file("js/ui");
 openjs.file("js/utils");
 openjs.file("js/app");

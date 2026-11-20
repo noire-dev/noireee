@@ -209,18 +209,6 @@ typedef struct {
 	int ping;
 } score_t;
 
-// a loose bone (hair, cloth) from
-// "jiggle <bone> <coeff> <damping> <stiffness> <gravity>" in animation.cfg
-#define MAX_PLAYER_JIGGLES 64
-
-typedef struct {
-	char bone[MAX_QPATH];
-	float scale;      // 0 = rigid, 1 = default softness, larger = floppier
-	float damping;    // 0 = use renderer default (r_jiggleDamping)
-	float stiffness;  // 0 = use renderer default (r_jiggleStiffness)
-	float gravity;    // 0 = use renderer default (r_jiggleGravity)
-} cgJiggle_t;
-
 // each client has an associated clientInfo_t
 // that contains media references necessary to present the
 // client model and other color coded effects
@@ -260,9 +248,6 @@ typedef struct {
 	// in the hand. Weapon models are authored for the full-size valveBiped
 	// hand, so models smaller than that need e.g. "weaponScale 0.7".
 	float weaponScale;
-
-	int numJiggles;
-	cgJiggle_t jiggles[MAX_PLAYER_JIGGLES];
 } clientInfo_t;
 
 // Minimal runtime cache for a weapon. All presentational data now lives in

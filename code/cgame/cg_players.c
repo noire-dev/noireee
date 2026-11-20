@@ -45,7 +45,6 @@ static bool CG_ParseAnimationFile(const char* filename, clientInfo_t* ci, char* 
 	ci->headUp = 0.0f;
 	ci->headFwd = 0.0f;
 	ci->weaponScale = 1.0f;
-	ci->numJiggles = 0;
 
 	len = trap_FS_FOpenFile(filename, &f, FS_READ);
 	if(len <= 0) {
@@ -108,72 +107,6 @@ static bool CG_ParseAnimationFile(const char* filename, clientInfo_t* ci, char* 
 			if(ci->weaponScale <= 0.0f) {
 				CG_Printf("Invalid weaponScale %s in %s, using 1\n", token, filename);
 				ci->weaponScale = 1.0f;
-			}
-			continue;
-		}
-
-		if(!Q_stricmp(token, "jiggle")) {
-			char boneName[MAX_QPATH];
-			cgJiggle_t* jig;
-			float jiggleScale;
-			char* textSave;
-			int cmdLine, param;
-
-			token = COM_Parse(&text_p);
-			if(!token[0]) {
-				CG_Printf("Missing bone name for jiggle in %s\n", filename);
-				return false;
-			}
-			Q_strncpyz(boneName, token, sizeof(boneName));
-
-			token = COM_Parse(&text_p);
-			if(!token[0]) {
-				CG_Printf("Missing scale for jiggle %s in %s\n", boneName, filename);
-				return false;
-			}
-			jiggleScale = (float)atof(token);
-			if(jiggleScale < 0.0f) {
-				CG_Printf("Invalid jiggle scale %s for %s in %s, using 0\n", token, boneName, filename);
-				jiggleScale = 0.0f;
-			}
-
-			if(ci->numJiggles >= MAX_PLAYER_JIGGLES) {
-				CG_Printf("Too many jiggle bones in %s (max %d)\n", filename, MAX_PLAYER_JIGGLES);
-				continue;
-			}
-
-			jig = &ci->jiggles[ci->numJiggles++];
-			Q_strncpyz(jig->bone, boneName, sizeof(jig->bone));
-			jig->scale = jiggleScale;
-			jig->damping = 0.0f;
-			jig->stiffness = 0.0f;
-			jig->gravity = 0.0f;
-
-			cmdLine = COM_GetCurrentParseLine();
-			for(param = 0; param < 3; param++) {
-				textSave = text_p;
-				token = COM_Parse(&text_p);
-				if(!token[0] || COM_GetCurrentParseLine() != cmdLine) {
-					text_p = textSave;
-					break;
-				}
-				switch(param) {
-					case 0:
-						jig->damping = (float)atof(token);
-						if(jig->damping < 0.0f) {
-							CG_Printf("Invalid jiggle damping %s for %s in %s, using 0\n", token, boneName, filename);
-							jig->damping = 0.0f;
-						}
-						break;
-					case 1:
-						jig->stiffness = (float)atof(token);
-						if(jig->stiffness < 0.0f) {
-							CG_Printf("Invalid jiggle stiffness %s for %s in %s, using 0\n", token, boneName, filename);
-							jig->stiffness = 0.0f;
-						}
-						break;
-					default: jig->gravity = (float)atof(token); break;
-				}
 			}
 			continue;
 		}
@@ -323,8 +256,6 @@ static void CG_CopyClientInfoModel(clientInfo_t* from, clientInfo_t* to) {
 	to->headUp = from->headUp;
 	to->headFwd = from->headFwd;
 	to->weaponScale = from->weaponScale;
-	to->numJiggles = from->numJiggles;
-	memcpy(to->jiggles, from->jiggles, sizeof(to->jiggles));
 	memcpy(to->animations, from->animations, sizeof(to->animations));
 }
 
@@ -758,14 +689,6 @@ bool CG_GetLocalPlayerHeadOrigin(vec3_t origin) {
 	return true;
 }
 
-static void CG_SetPlayerJiggles(const clientInfo_t* ci) {
-	int i;
-
-	for(i = 0; i < ci->numJiggles; i++) {
-		trap_R_SetJiggleData(ci->jiggles[i].bone, ci->jiggles[i].scale, ci->jiggles[i].damping, ci->jiggles[i].stiffness, ci->jiggles[i].gravity);
-	}
-}
-
 void CG_Player(centity_t* cent) {
 	clientInfo_t* ci;
 	refEntity_t player;
@@ -786,6 +709,9 @@ void CG_Player(centity_t* cent) {
 
 	player.hModel = ci->model;
 	player.customSkin = ci->modelSkin;
+	// bodygroups: packed selection of the model's <modelname>.cfg (server
+	// assigns it from the client's "modelgroups" userinfo cvar)
+	player.bodygroups = cent->currentState.bodygroups;
 	VectorCopy(cent->lerpOrigin, player.origin);
 	VectorCopy(cent->lerpOrigin, player.lightingOrigin);
 	VectorCopy(player.origin, player.oldorigin);
@@ -803,7 +729,6 @@ void CG_Player(centity_t* cent) {
 		trap_R_SetBoneScale("ValveBiped.Bip01_Neck1", hideScale);
 		trap_R_SetBoneScale("ValveBiped.Bip01_Head1", hideScale);
 		player.renderfx |= RF_FIRST_PERSON | RF_NO_REFLECT;
-		CG_SetPlayerJiggles(ci);
 		trap_R_AddRefEntityToScene(&player);
 
 		// mirrors and portals: full skeleton, visible only in reflection passes
@@ -811,14 +736,12 @@ void CG_Player(centity_t* cent) {
 		trap_R_SetBoneScale("ValveBiped.Bip01_Head1", normalScale);
 		player.renderfx &= ~RF_FIRST_PERSON | RF_NO_REFLECT;
 		player.renderfx |= RF_THIRD_PERSON;
-		CG_SetPlayerJiggles(ci);
 		trap_R_AddRefEntityToScene(&player);
 
 		// the weapon rides on the hand, which is identical in both bodies;
 		// drop the pass flags so it draws in the main view and in mirrors
 		player.renderfx &= ~RF_THIRD_PERSON;
 	} else {
-		CG_SetPlayerJiggles(ci);
 		trap_R_AddRefEntityToScene(&player);
 	}
 

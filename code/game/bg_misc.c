@@ -250,6 +250,7 @@ void BG_PlayerStateToEntityState(playerState_t* ps, entityState_t* s, bool snap)
 
 	s->loopSound = ps->loopSound;
 	s->generic1 = ps->generic1;
+	s->bodygroups = ps->bodygroups;
 }
 
 /*
@@ -309,6 +310,7 @@ void BG_PlayerStateToEntityStateExtraPolate(playerState_t* ps, entityState_t* s,
 
 	s->loopSound = ps->loopSound;
 	s->generic1 = ps->generic1;
+	s->bodygroups = ps->bodygroups;
 }
 
 /*

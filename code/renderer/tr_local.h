@@ -161,9 +161,9 @@ typedef struct {
 	vec3_t angles;
 } boneAngleEntry_t;
 
-#define MAX_RENDER_JIGGLES 512  // per frame
-#define MAX_ENTITY_JIGGLES 64   // per ref entity
-#define MAX_JIGGLE_STATES 64    // simultaneously simulated entities
+#define MAX_RENDER_JIGGLES 2048  // per frame
+#define MAX_ENTITY_JIGGLES 64    // max jiggle joints simulated per entity
+#define MAX_JIGGLE_STATES 64     // simultaneously simulated entities
 
 typedef struct {
 	int entityNum;  // absolute index into backEndData->entities
@@ -1073,6 +1073,38 @@ typedef struct iqmAnimation_s {
 	iqmTransform_t* jointBindLocal;  // [num_joints]
 } iqmAnimation_t;
 
+// BODYGROUPS-BEGIN
+// one action line of a bodygroup option: <group> <option> -> mesh hide/material
+typedef struct {
+	int group;         // bodygroup id the line belongs to
+	int option;        // option id inside the group
+	int surfaceIndex;  // index into iqmData_t::surfaces, -1 if the mesh name is unknown
+	shader_t* shader;  // material override (NULL = keep the mesh's own material)
+	bool hide;         // true = do not render this mesh at all
+} bodygroupLine_t;
+
+// one group ("slider") of the bodygroup config
+typedef struct {
+	int numOptions;    // count[g] = max option id + 1 (radix of the group)
+	int* optionFirst;  // [numOptions] first line index in iqmData_t::bodygroupLines
+	int* optionCount;  // [numOptions]
+} bodygroupGroup_t;
+
+// jiggle bone requested by a "jiggle" line of <model>.cfg (applied to every
+// entity rendered with this model, not only players)
+typedef struct {
+	int jointIndex;  // -1 = joint not found in the model
+	float scale;
+	float damping;    // 0 = r_jiggleDamping
+	float stiffness;  // 0 = r_jiggleStiffness
+	float gravity;    // 0 = r_jiggleGravity
+} iqmJiggleCfg_t;
+
+#define MAX_MODEL_BODYGROUPS 16         // == MAX_BODYGROUP_GROUPS (q_shared.h)
+#define MAX_MODEL_BODYGROUP_OPTIONS 32  // options per group
+#define MAX_MODEL_JIGGLES 64            // jiggle lines per model cfg
+// BODYGROUPS-END
+
 // inter-quake-model
 typedef struct {
 	int num_vertexes;
@@ -1119,6 +1151,16 @@ typedef struct {
 	int numVaoSurfaces;
 	struct srfVaoIQModel_s* vaoSurfaces;
 
+	// BODYGROUPS-BEGIN: parsed from <modelname>.cfg (loaded with the model)
+	int numBodygroups;  // number of groups ("sliders")
+	bodygroupGroup_t* bodygroups;
+	int numBodygroupLines;  // all bodygroup/action lines, flattened
+	bodygroupLine_t* bodygroupLines;
+
+	int numJiggleCfgs;  // "jiggle" lines of the cfg, auto-applied to every entity
+	iqmJiggleCfg_t* jiggleCfgs;
+	// BODYGROUPS-END
+
 	struct iqmAnimation_s* anim;
 } iqmData_t;
 
@@ -1139,6 +1181,7 @@ typedef struct {
 	int jointLastTime[IQM_MAX_JOINTS];  // refdef time of the last step, per joint
 	vec3_t pos[IQM_MAX_JOINTS];
 	vec3_t vel[IQM_MAX_JOINTS];
+	float jointPos[IQM_MAX_JOINTS][3];
 } jiggleState_t;
 
 // inter-quake-model surface
@@ -1913,8 +1956,8 @@ typedef struct {
 	int numBoneAngleEntries;
 	boneAngleEntry_t boneAngleEntries[MAX_RENDER_BONEANGLES];
 
-	// per-entity jiggle bones, requested from cgame with RE_SetJiggleData
-	// and attached to the next added ref entity (reset once per frame)
+	// per-entity jiggle bones, parsed from <modelname>.cfg and attached to
+	// every ref entity drawn with that model (reset once per frame)
 	int numJiggleEntries;
 	jiggleEntry_t jiggleEntries[MAX_RENDER_JIGGLES];
 
@@ -1989,6 +2032,7 @@ extern cvar_t* r_jiggleGravity;    // gravity of the jiggle simulation (z, units
 extern cvar_t* r_jiggleStiffness;  // spring stiffness pulling the tip back to the animated pose
 extern cvar_t* r_jiggleDamping;    // velocity damping
 extern cvar_t* r_jiggleMaxSpeed;   // max swing speed of the jiggle tip (units/s, 0 = no cap)
+extern cvar_t* r_jiggleMoveModifier;
 
 extern cvar_t* r_depthPrepass;
 extern cvar_t* r_shadows;
@@ -2516,7 +2560,6 @@ void RE_SetBoneAngles(const char* jointName, const vec3_t angles);
 int R_GetEntityBoneAngles(int entityNum, int* joints, vec3_t* angles, int maxCount);
 bool R_EntityHasBoneAngles(int entityNum);
 int RE_GetModelBone(qhandle_t model, int index, char* name, int size);
-void RE_SetJiggleData(const char* jointName, float scale, float damping, float stiffness, float gravity);
 int R_GetEntityJiggles(int entityNum, int* joints, quat_t* deltas, int maxCount);
 void R_JiggleUpdateScene(void);
 int R_IQMJiggleEntity(const refEntity_t* re, int sceneEntityNum, jiggleEntry_t* entries, int numEntries, jiggleState_t* st, int timeMs);

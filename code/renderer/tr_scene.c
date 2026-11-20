@@ -150,66 +150,74 @@ static int R_ApplyPendingBoneAngles(const refEntity_t* ent, int entityNum) {
 	return attached;
 }
 
-typedef struct {
-	char name[MAX_QPATH];
-	float scale;
-	float damping;    // 0 = r_jiggleDamping
-	float stiffness;  // 0 = r_jiggleStiffness
-	float gravity;    // 0 = r_jiggleGravity
-} pendingJiggle_t;
+// BODYGROUPS-BEGIN
+// add or update the jiggle entry of one joint for one entity (the same joint
+// twice for one entity: the last write wins)
+static void R_AddEntityJiggleEntry(const iqmData_t* data, int entityNum, int joint, float scale, float damping, float stiffness, float gravity) {
+	jiggleEntry_t* entry = NULL;
+	int j;
 
-static pendingJiggle_t r_pendingJiggles[MAX_ENTITY_JIGGLES];
-static int r_numPendingJiggles;
-
-static void R_ApplyPendingJiggles(const refEntity_t* ent, int entityNum) {
-	const model_t* mod;
-	const iqmData_t* data;
-	int i, j, joint;
-
-	if(r_numPendingJiggles <= 0) {
+	if(joint < 0) {
 		return;
 	}
 
-	mod = R_GetModelByHandle(ent->hModel);
-	data = (mod && mod->type == MOD_IQM) ? mod->modelData : NULL;
-
-	for(i = 0; i < r_numPendingJiggles; i++) {
-		const pendingJiggle_t* pending = &r_pendingJiggles[i];
-		jiggleEntry_t* entry;
-
-		joint = -1;
-		if(!R_FindIQMJoint(data, pending->name, &joint) || joint < 0) {
-			continue;
+	entry = NULL;
+	for(j = tr.numJiggleEntries - 1; j >= 0 && tr.jiggleEntries[j].entityNum == entityNum; j--) {
+		if(tr.jiggleEntries[j].jointIndex == joint) {
+			entry = &tr.jiggleEntries[j];
+			break;
 		}
-
-		// the same joint twice for one entity: the last call wins
-		entry = NULL;
-		for(j = tr.numJiggleEntries - 1; j >= 0 && tr.jiggleEntries[j].entityNum == entityNum; j--) {
-			if(tr.jiggleEntries[j].jointIndex == joint) {
-				entry = &tr.jiggleEntries[j];
-				break;
-			}
-		}
-
-		if(!entry) {
-			if(tr.numJiggleEntries >= MAX_RENDER_JIGGLES) {
-				break;
-			}
-			entry = &tr.jiggleEntries[tr.numJiggleEntries++];
-			entry->entityNum = entityNum;
-			entry->jointIndex = joint;
-		}
-
-		entry->scale = pending->scale;
-		entry->damping = pending->damping;
-		entry->stiffness = pending->stiffness;
-		entry->gravity = pending->gravity;
-		entry->delta[0] = entry->delta[1] = entry->delta[2] = 0.0f;
-		entry->delta[3] = 1.0f;
 	}
 
-	r_numPendingJiggles = 0;
+	if(!entry) {
+		if(tr.numJiggleEntries >= MAX_RENDER_JIGGLES) {
+			static bool warned = false;
+			if(!warned) {
+				ri.Printf(PRINT_WARNING, "R_AddEntityJiggleEntry: too many jiggle entries this frame (max %d)\n", MAX_RENDER_JIGGLES);
+				warned = true;
+			}
+			return;
+		}
+		entry = &tr.jiggleEntries[tr.numJiggleEntries++];
+		entry->entityNum = entityNum;
+		entry->jointIndex = joint;
+	}
+
+	entry->scale = scale;
+	entry->damping = damping;
+	entry->stiffness = stiffness;
+	entry->gravity = gravity;
+	entry->delta[0] = entry->delta[1] = entry->delta[2] = 0.0f;
+	entry->delta[3] = 1.0f;
 }
+
+/*
+=====================
+R_ApplyModelJiggles
+
+Jiggle bones declared with "jiggle" lines in <modelname>.cfg apply to EVERY
+entity rendered with that model (player, prop, npc, ...), not only to players.
+=====================
+*/
+static void R_ApplyModelJiggles(const refEntity_t* ent, int entityNum) {
+	const model_t* mod;
+	const iqmData_t* data;
+	int i;
+
+	mod = R_GetModelByHandle(ent->hModel);
+	data = (mod && mod->type == MOD_IQM) ? mod->modelData : NULL;
+	if(!data || data->numJiggleCfgs <= 0) {
+		return;
+	}
+
+	for(i = 0; i < data->numJiggleCfgs; i++) {
+		const iqmJiggleCfg_t* cfg = &data->jiggleCfgs[i];
+
+		if(cfg->scale <= 0.0f) continue;
+		R_AddEntityJiggleEntry(data, entityNum, cfg->jointIndex, cfg->scale, cfg->damping, cfg->stiffness, cfg->gravity);
+	}
+}
+// BODYGROUPS-END
 
 /*
 ====================
@@ -251,7 +259,6 @@ void RE_ClearScene(void) {
 	tr.numBoneAngleEntries = 0;
 	r_numPendingBoneScales = 0;
 	r_numPendingBoneAngles = 0;
-	r_numPendingJiggles = 0;
 }
 
 /*
@@ -400,9 +407,9 @@ void RE_AddRefEntityToScene(const refEntity_t* ent) {
 	R_ApplyPendingBoneScales(ent, r_numentities - r_firstSceneEntity);
 	if(R_ApplyPendingBoneAngles(ent, r_numentities - r_firstSceneEntity) > 0) {
 		// a ragdoll is posed by the physics, hair / cloth jiggle on top of it makes no sense
-		r_numPendingJiggles = 0;
 	} else {
-		R_ApplyPendingJiggles(ent, r_numentities);
+		// jiggle bones from <modelname>.cfg, applied to every model
+		R_ApplyModelJiggles(ent, r_numentities);
 	}
 
 	r_numentities++;
@@ -564,68 +571,6 @@ int RE_GetModelBone(qhandle_t model, int index, char* name, int size) {
 	return data->num_joints;
 }
 
-/*
-=====================
-RE_SetJiggleData
-
-Immediate mode, like RE_SetBoneScale: mark a joint as a jiggle bone (hair,
-cloth) of the next ref entity added to the scene (and only of it).
-scale is the looseness of the joint: 0 = rigid, 1 = default softness,
-larger = floppier. The renderer simulates the joint, cgame only has to say
-which joints are loose and by how much.
-
-damping, stiffness and gravity override the global cvars per joint; a value
-of 0 means "use r_jiggleDamping / r_jiggleStiffness / r_jiggleGravity".
-=====================
-*/
-void RE_SetJiggleData(const char* jointName, float scale, float damping, float stiffness, float gravity) {
-	pendingJiggle_t* pending;
-	int i;
-
-	if(!tr.registered || !jointName || !jointName[0]) {
-		return;
-	}
-
-	if(Q_isnan(scale) || scale < 0.0f) {
-		scale = 0.0f;
-	}
-	if(Q_isnan(damping) || damping < 0.0f) {
-		damping = 0.0f;
-	}
-	if(Q_isnan(stiffness) || stiffness < 0.0f) {
-		stiffness = 0.0f;
-	}
-	if(Q_isnan(gravity)) {
-		gravity = 0.0f;
-	}
-
-	// the same joint again before the entity is added: the last call wins
-	for(i = 0; i < r_numPendingJiggles; i++) {
-		if(!Q_stricmp(r_pendingJiggles[i].name, jointName)) {
-			r_pendingJiggles[i].scale = scale;
-			r_pendingJiggles[i].damping = damping;
-			r_pendingJiggles[i].stiffness = stiffness;
-			r_pendingJiggles[i].gravity = gravity;
-			return;
-		}
-	}
-
-	if(r_numPendingJiggles >= MAX_ENTITY_JIGGLES) {
-		static bool warned = false;
-		if(!warned) {
-			ri.Printf(PRINT_WARNING, "RE_SetJiggleData: too many pending jiggle bones (max %d)\n", MAX_ENTITY_JIGGLES);
-			warned = true;
-		}
-		return;
-	}
-
-	pending = &r_pendingJiggles[r_numPendingJiggles++];
-	Q_strncpyz(pending->name, jointName, sizeof(pending->name));
-	pending->scale = scale;
-	pending->damping = damping;
-	pending->stiffness = stiffness;
-	pending->gravity = gravity;
-}
 
 /*
 =====================

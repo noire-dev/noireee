@@ -259,6 +259,8 @@ void CG_Ragdoll(centity_t* cent) {
 	memset(&ent, 0, sizeof(ent));
 	ent.reType = RT_MODEL;
 	ent.hModel = hModel;
+	// bodygroups: the ragdoll keeps the packed selection of its source entity
+	ent.bodygroups = cent->currentState.bodygroups;
 	AxisClear(ent.axis);  // the bone angles are world space
 	VectorCopy(cent->lerpOrigin, ent.origin);
 	ent.renderfx = RF_LIGHTING_ORIGIN;

@@ -85,7 +85,7 @@ void player_die(gentity_t* self, gentity_t* inflictor, gentity_t* attacker, int 
 		vec3_t origin;
 		VectorCopy(self->client->ps.origin, origin);
 		origin[2] += MINS_Z;
-		G_SpawnRagdoll(origin, self->client->ps.viewangles[YAW], model, self->s.number, RAGDOLL_SIMPLE, 30000);
+		G_SpawnRagdoll(origin, self->client->ps.viewangles[YAW], model, self->s.number, RAGDOLL_SIMPLE, 30000, self->s.bodygroups);
 		self->client->ps.eFlags |= EF_NODRAW;
 	}
 

@@ -202,23 +202,6 @@ static bool RD_ParseAnimationFile(const char* filename, char* animFile, int anim
 			COM_Parse(&text_p);
 			continue;
 		}
-		if(!Q_stricmp(token, "jiggle")) {
-			char* textSave;
-			int cmdLine, param;
-
-			COM_Parse(&text_p);  // bone
-			COM_Parse(&text_p);  // scale
-			cmdLine = COM_GetCurrentParseLine();
-			for(param = 0; param < 3; param++) {
-				textSave = text_p;
-				token = COM_Parse(&text_p);
-				if(!token[0] || COM_GetCurrentParseLine() != cmdLine) {
-					text_p = textSave;
-					break;
-				}
-			}
-			continue;
-		}
 
 		index = RD_AnimationIndexFromName(token);
 		if(index < 0 || index >= MAX_TOTALANIMATIONS) return false;
@@ -485,11 +468,12 @@ model:    player model name, same as the "model" userinfo key (models/players/<m
 playerid: -1 = pose is frame 0 of the animation file,
           >= 0 = pose is the last frame of the animation that client is playing
 type:     RAGDOLL_SIMPLE or RAGDOLL_DETAILED
+bodygroups: packed bodygroup selection the ragdoll keeps (from its source entity)
 
 Returns the ragdollID, or -1 on failure.
 ===============
 */
-int G_SpawnRagdoll(const vec3_t origin, float yaw, const char* model, int playerid, int type, int lifetime) {
+int G_SpawnRagdoll(const vec3_t origin, float yaw, const char* model, int playerid, int type, int lifetime, int bodygroups) {
 	char path[MAX_QPATH];
 	char cfgPath[MAX_QPATH];
 	char animFile[MAX_QPATH];
@@ -792,6 +776,7 @@ int G_SpawnRagdoll(const vec3_t origin, float yaw, const char* model, int player
 	master->classname = "ragdoll";
 	master->s.eType = ET_RAGDOLL;
 	master->s.ragdollID = id;
+	master->s.bodygroups = bodygroups < 0 ? 0 : bodygroups;
 	master->r.contents = 0;
 	VectorSet(master->r.mins, -96, -96, -96);
 	VectorSet(master->r.maxs, 96, 96, 96);
@@ -931,7 +916,7 @@ void Cmd_Ragdoll_f(gentity_t* ent) {
 	VectorCopy(tr.endpos, origin);
 	origin[2] += 2.0f;  // feet capsules must not start inside the floor
 
-	id = G_SpawnRagdoll(origin, ent->client->ps.viewangles[YAW], model, playerid, type, 0);
+	id = G_SpawnRagdoll(origin, ent->client->ps.viewangles[YAW], model, playerid, type, 0, ent->s.bodygroups);
 	trap_SendServerCommand(ent - g_entities, va("print \"ragdoll %s (%s): %s %d\n\"", model, type == RAGDOLL_DETAILED ? "detailed" : "simple", id >= 0 ? "id" : "failed", id));
 }
 

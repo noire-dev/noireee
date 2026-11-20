@@ -282,6 +282,18 @@ void ClientUserinfoChanged(int clientNum) {
 	// set model
 	Q_strncpyz(model, Info_ValueForKey(userinfo, "model"), sizeof(model));
 
+	// packed bodygroup selection ("modelgroups" userinfo cvar, written by the
+	// UI via setBodygroups()). Only the packed int32 lives server side: the
+	// clients resolve meshes/materials from their own <modelname>.cfg.
+	// Negative values are treated as 0 (every group at option 0).
+	client->pers.bodygroups = atoi(Info_ValueForKey(userinfo, "modelgroups"));
+	if(client->pers.bodygroups < 0) client->pers.bodygroups = 0;
+	ent->s.bodygroups = client->pers.bodygroups;
+	// ps too: the local player's rendered entity state is rebuilt from ps
+	// (BG_PlayerStateToEntityState), so without ps.bodygroups the client
+	// would never see its own bodygroups
+	client->ps.bodygroups = client->pers.bodygroups;
+
 	// colors
 	strcpy(physR, Info_ValueForKey(userinfo, "physR"));
 	strcpy(physG, Info_ValueForKey(userinfo, "physG"));
@@ -525,6 +537,10 @@ void ClientSpawn(gentity_t* ent) {
 	ent->waterlevel = 0;
 	ent->watertype = 0;
 	ent->flags = 0;
+
+	// bodygroups survive respawns via client->pers (set in ClientUserinfoChanged)
+	ent->s.bodygroups = client->pers.bodygroups;
+	client->ps.bodygroups = client->pers.bodygroups;
 
 	VectorCopy(playerMins, ent->r.mins);
 	VectorCopy(playerMaxs, ent->r.maxs);

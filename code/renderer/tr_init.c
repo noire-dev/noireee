@@ -90,6 +90,7 @@ cvar_t* r_jiggleGravity;
 cvar_t* r_jiggleStiffness;
 cvar_t* r_jiggleDamping;
 cvar_t* r_jiggleMaxSpeed;
+cvar_t* r_jiggleMoveModifier;
 
 cvar_t* r_depthPrepass;
 cvar_t* r_shadows;
@@ -913,6 +914,7 @@ void R_Register(void) {
 	r_jiggleStiffness = ri.Cvar_Get("r_jiggleStiffness", "192", CVAR_ARCHIVE);
 	r_jiggleDamping = ri.Cvar_Get("r_jiggleDamping", "38", CVAR_ARCHIVE);
 	r_jiggleMaxSpeed = ri.Cvar_Get("r_jiggleMaxSpeed", "64", CVAR_ARCHIVE);
+	r_jiggleMoveModifier = ri.Cvar_Get("r_jiggleMoveModifier", "0.50", CVAR_ARCHIVE);
 
 	r_depthPrepass = ri.Cvar_Get("r_depthPrepass", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	r_shadows = ri.Cvar_Get("r_shadows", "1", CVAR_ARCHIVE | CVAR_LATCH);
@@ -1230,7 +1232,6 @@ refexport_t* GetRefAPI(int apiVersion, refimport_t* rimp) {
 	re.AddPointLightToScene = RE_AddPointLightToScene;
 	re.AddProjectorToScene = RE_AddProjectorToScene;
 	re.SetBoneScale = RE_SetBoneScale;
-	re.SetJiggleData = RE_SetJiggleData;
 	re.SetBoneAngles = RE_SetBoneAngles;
 	re.GetModelBone = RE_GetModelBone;
 	re.RenderScene = RE_RenderScene;

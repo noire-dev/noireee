@@ -208,7 +208,6 @@ typedef enum {
 	TRAP_KEY_GETKEY,
 	TRAP_IMPORTOBJ,
 	TRAP_R_SETBONESCALE,
-	TRAP_R_SETJIGGLEDATA,
 	TRAP_R_SETBONEANGLES,
 	TRAP_R_GETMODELBONE,
 	TRAP_R_ADDPOINTLIGHTTOSCENE,
@@ -1100,6 +1099,12 @@ typedef struct playerState_s {
 	int generic1;
 	int loopSound;
 
+	// bodygroups: packed per-model bodygroup selection ("modelgroups"
+	// userinfo cvar). Lives on the player state because the LOCAL player's
+	// rendered entity state is rebuilt from ps (BG_PlayerStateToEntityState),
+	// not from the snapshot entity list; mirrored in entityState_t::bodygroups.
+	int bodygroups;
+
 	// not communicated over the net at all
 	int ping;  // server to game info for scoreboard
 	int pmove_framecount;
@@ -1260,10 +1265,45 @@ typedef struct entityState_s {
 
 	int generic1;
 
+	// bodygroups: packed per-model bodygroup selection (see BG_Bodygroup* in
+	// this header). The client sets the userinfo cvar "modelgroups", the game
+	// copies it here via ClientUserinfoChanged; props/ragdolls get it at spawn.
+	// Only the packed int32 travels the network, never mesh/material names.
+	int bodygroups;
+
 	// ragdoll (ET_RAGDOLL master and ragdoll bone entities)
 	int ragdollID;  // index into ragdollState[]
 	int boneID;     // index into ragdollState[ragdollID].angles[] (bone entities only)
 } entityState_t;
+
+// ===========================================================================
+// Bodygroups: per-model mesh visibility / material variants, encoded as a
+// single packed int32 in entityState_t::bodygroups.
+//
+// A model cfg (<modelname>.cfg) declares groups ("sliders"); group g has
+// count[g] options (max option_id + 1). Encoding (variable radix):
+//   base[0] = 1; base[i] = base[i-1] * count[i-1]
+//   value of group g:  (packed / base[g]) % count[g]
+//   set group g to v:  packed -= old * base[g]; packed += v * base[g]
+// packed == 0 selects option 0 of every group (the default). The same math is
+// mirrored in js/js/bodygroups.js for the UI.
+// ===========================================================================
+#define MAX_BODYGROUP_GROUPS 16  // hard cap: product of counts must fit int32
+
+static ID_INLINE int BG_BodygroupGet(int packed, int base, int count) {
+	if(count <= 0 || base <= 0) return 0;
+	if(packed < 0) packed = 0;  // negative packed is treated as "all defaults"
+	return (packed / base) % count;
+}
+
+static ID_INLINE int BG_BodygroupSet(int packed, int base, int count, int value) {
+	int oldVal;
+	if(count <= 0 || base <= 0) return packed;
+	if(value < 0) value = 0;
+	if(value >= count) value = count - 1;
+	oldVal = BG_BodygroupGet(packed, base, count);
+	return packed - oldVal * base + value * base;
+}
 
 typedef enum {
 	CA_UNINITIALIZED,

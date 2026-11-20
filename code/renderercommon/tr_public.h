@@ -67,7 +67,6 @@ typedef struct {
 	void (*AddPolyToScene)(qhandle_t hShader, int numVerts, const polyVert_t* verts, int num);
 	int (*LightForPoint)(vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir);
 	void (*SetBoneScale)(const char* jointName, const vec3_t scale);
-	void (*SetJiggleData)(const char* jointName, float scale, float damping, float stiffness, float gravity);
 	void (*SetBoneAngles)(const char* jointName, const vec3_t angles);
 	int (*GetModelBone)(qhandle_t model, int index, char* name, int size);
 	void (*RenderScene)(const refdef_t* fd);

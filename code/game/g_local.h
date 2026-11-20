@@ -160,6 +160,7 @@ typedef struct {
 	usercmd_t cmd;     // we would lose angles if not persistant
 	bool localClient;  // true if "ip" info key is "localhost"
 	char netname[MAX_NETNAME];
+	int bodygroups;    // packed bodygroup selection, from the "modelgroups" userinfo cvar
 } clientPersistant_t;
 
 // this structure is cleared on each ClientSpawn(),
@@ -457,7 +458,7 @@ bool trap_Ragdoll_LoadSkeleton(const char* modelPath, const char* animPath, int 
 //
 // g_ragdoll.c
 //
-int G_SpawnRagdoll(const vec3_t origin, float yaw, const char* model, int playerid, int type, int lifetime);
+int G_SpawnRagdoll(const vec3_t origin, float yaw, const char* model, int playerid, int type, int lifetime, int bodygroups);
 void G_RemoveRagdoll(int id);
 void G_RemoveAllRagdolls(void);
 void G_InitRagdolls(void);

@@ -94,6 +94,10 @@ typedef struct {
 	qhandle_t customSkin;    // NULL for default skin
 	qhandle_t customShader;  // use one image for the entire thing
 
+	// per-model bodygroup selection (packed, see <modelname>.cfg). 0 = option 0
+	// of every group. The renderer hides meshes / swaps materials accordingly.
+	int bodygroups;
+
 	// misc
 	byte shaderRGBA[4];       // colors used by rgbgen entity shaders
 	float shaderTexCoord[2];  // texture coordinates used by tcMod entity modifiers
