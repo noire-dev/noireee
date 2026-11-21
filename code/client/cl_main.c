@@ -3086,6 +3086,9 @@ void CL_InitRef(void) {
 	ri.Sys_GLimpInit = Sys_GLimpInit;
 	ri.Sys_LowPhysicalMemory = Sys_LowPhysicalMemory;
 
+	ri.CM_InlineModel = CM_InlineModel;
+	ri.CM_BoxTrace = CM_BoxTrace;
+
 	ret = GetRefAPI(REF_API_VERSION, &ri);
 
 	Com_Printf("-------------------------------\n");

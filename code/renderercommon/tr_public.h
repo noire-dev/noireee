@@ -147,6 +147,13 @@ typedef struct {
 
 	byte* (*CM_ClusterPVS)(int cluster);
 
+	// доступ к коллизии для рантайм-освещения энтити (r_entityLightTrace):
+	// рендерер подгружается движком как отдельная библиотека и не может
+	// вызывать qcommon напрямую — только через refimport. NULL = трассировки
+	// нет (свет до light-энтити не перекрывается миром)
+	clipHandle_t (*CM_InlineModel)(int index);
+	void (*CM_BoxTrace)(trace_t* results, const vec3_t start, const vec3_t end, vec3_t mins, vec3_t maxs, clipHandle_t model, int brushmask, int capsule);
+
 	// a -1 return means the file does not exist
 	// NULL can be passed for buf to just determine existence
 	int (*FS_FileIsInPAK)(const char* name, int* pCheckSum);

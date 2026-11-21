@@ -1012,6 +1012,7 @@ void GLSL_InitGPUShaders(void) {
 
 		// skip impossible combos
 		if((i & LIGHTDEF_USE_PARALLAXMAP) && !r_parallaxMapping->integer) continue;
+		if((i & LIGHTDEF_USE_LINEAR_ATTENUATION) && lightType != LIGHTDEF_USE_LIGHT_VECTOR) continue;
 
 		if((i & LIGHTDEF_USE_SHADOWMAP) && (!lightType || !r_shadows->integer)) continue;
 
@@ -1023,7 +1024,8 @@ void GLSL_InitGPUShaders(void) {
 
 		extradefines[0] = '\0';
 
-		if(r_dynamicLight->integer >= 2 && lightType == LIGHTDEF_USE_LIGHT_VECTOR) {
+		if(!(i & LIGHTDEF_USE_LINEAR_ATTENUATION) &&
+			r_dynamicLight->integer >= 2 && lightType == LIGHTDEF_USE_LIGHT_VECTOR) {
 			Q_strcat(extradefines, 1024, "#define USE_DLIGHT_SHADOWMAP\n");
 		}
 
@@ -1036,6 +1038,9 @@ void GLSL_InitGPUShaders(void) {
 
 		if(lightType) {
 			Q_strcat(extradefines, 1024, "#define USE_LIGHT\n");
+			if(i & LIGHTDEF_USE_LINEAR_ATTENUATION) {
+				Q_strcat(extradefines, 1024, "#define USE_LINEAR_ATTENUATION\n");
+			}
 
 			switch(lightType) {
 				case LIGHTDEF_USE_LIGHTMAP:
@@ -1060,7 +1065,7 @@ void GLSL_InitGPUShaders(void) {
 
 			// The forward dynamic-light pass uses texture unit 6 for its shadow cubemap.
 			// Do not compile reflection sampling into that pass (same sampler unit).
-			if(r_cubeReflections->integer) {
+			if(r_cubeReflections->integer && !(i & LIGHTDEF_USE_LINEAR_ATTENUATION)) {
 				Q_strcat(extradefines, 1024, "#define USE_CUBEMAP\n");
 			}
 			// Planar water reflection (r_planarReflections). Uses its own texture unit (TB_WATERREFLECT),

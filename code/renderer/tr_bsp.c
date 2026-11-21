@@ -74,6 +74,156 @@ R_LoadLightmaps
 ===============
 */
 #define DEFAULT_LIGHTMAP_SIZE 128
+
+// The external lightmap set is stored as alternating files:
+// lm_0000.tga = lightmap 0, lm_0001.tga = deluxe map 0,
+// lm_0002.tga = lightmap 1, lm_0003.tga = deluxe map 1, etc.
+extern void R_LoadTGA(const char* name, byte** pic, int* width, int* height);
+
+// Probe through the same VFS API used by R_LoadTGA. FS_FileExists can
+// disagree with the active search paths on some engine builds, while
+// FS_ReadFile(path, NULL) performs the canonical VFS existence check.
+static bool R_ExternalLightmapFileExists(const char* path) { return ri.FS_ReadFile(path, NULL) > 0; }
+
+static bool R_LoadExternalLightmaps(lump_t* surfs) {
+	char lightmapPath[MAX_QEXTENDEDPATH];
+	byte* pic;
+	dsurface_t* surf;
+	int i, j, numLightmaps = 0;
+	int width = 0, height = 0;
+	int numLightmapsPerPage;
+	int maxLightmapsPerAxis;
+	int lightmapCols, lightmapRows;
+	int atlasIndex, lightmapOnPage, xoff, yoff;
+
+	// External lightmaps live next to the map in maps/<mapname>/.
+	Com_sprintf(lightmapPath, sizeof(lightmapPath), "maps/%s/lm_0000.tga", s_worldData.baseName);
+	if(!R_ExternalLightmapFileExists(lightmapPath)) {
+		ri.Printf(PRINT_ALL, "External lightmaps not found/readable through VFS: %s\n", lightmapPath);
+		return false;
+	}
+
+	// Count consecutive lightmap/deluxe pairs. Deluxe maps are mandatory
+	// and always occupy the odd-numbered file in each pair.
+	for(i = 0;; i++) {
+		Com_sprintf(lightmapPath, sizeof(lightmapPath), "maps/%s/lm_%04d.tga", s_worldData.baseName, i * 2);
+		if(!R_ExternalLightmapFileExists(lightmapPath)) break;
+
+		Com_sprintf(lightmapPath, sizeof(lightmapPath), "maps/%s/lm_%04d.tga", s_worldData.baseName, i * 2 + 1);
+		if(!R_ExternalLightmapFileExists(lightmapPath)) {
+			ri.Error(ERR_DROP, "R_LoadLightmaps: missing mandatory deluxe map %s", lightmapPath);
+		}
+		numLightmaps++;
+	}
+
+	// Do not silently accept an odd deluxe file without its even lightmap.
+	Com_sprintf(lightmapPath, sizeof(lightmapPath), "maps/%s/lm_%04d.tga", s_worldData.baseName, i * 2 + 1);
+	if(R_ExternalLightmapFileExists(lightmapPath)) {
+		ri.Error(ERR_DROP, "R_LoadLightmaps: deluxe map %s has no matching lightmap", lightmapPath);
+	}
+
+	if(numLightmaps <= 0) return false;
+
+	// Every surface lightmap index must point at an even slot; the following
+	// odd slot is its deluxe direction map.
+	for(i = 0, surf = (dsurface_t*)(fileBase + surfs->fileofs); i < surfs->filelen / sizeof(dsurface_t); i++, surf++) {
+		int lightmapNum = LittleLong(surf->lightmapNum);
+		if(lightmapNum < 0) continue;
+		if(lightmapNum & 1) {
+			ri.Error(ERR_DROP, "R_LoadLightmaps: surface %d has odd lightmap index %d; external deluxe maps require even lightmap indices", i, lightmapNum);
+		}
+		if((lightmapNum >> 1) >= numLightmaps) {
+			ri.Error(ERR_DROP, "R_LoadLightmaps: surface %d references lightmap %d, but only %d external lightmaps were found", i, lightmapNum >> 1, numLightmaps);
+		}
+	}
+
+	// Read the first image to determine the external lightmap resolution.
+	Com_sprintf(lightmapPath, sizeof(lightmapPath), "maps/%s/lm_0000.tga", s_worldData.baseName);
+	R_LoadTGA(lightmapPath, &pic, &width, &height);
+	if(!pic) ri.Error(ERR_DROP, "R_LoadLightmaps: failed to load external lightmap %s", lightmapPath);
+	if(width <= 0 || height <= 0 || width != height) {
+		ri.Error(ERR_DROP, "R_LoadLightmaps: external lightmap %s must be square (got %dx%d)", lightmapPath, width, height);
+	}
+	tr.lightmapSize = width;
+	ri.Free(pic);
+
+	if(tr.lightmapSize > glConfig.maxTextureSize) {
+		ri.Error(ERR_DROP, "R_LoadLightmaps: external lightmap size %d exceeds GL_MAX_TEXTURE_SIZE %d", tr.lightmapSize, glConfig.maxTextureSize);
+	}
+
+	// External lightmaps always have deluxe direction maps.
+	tr.worldDeluxeMapping = true;
+
+	// We are about to upload textures.
+	R_IssuePendingRenderCommands();
+
+	maxLightmapsPerAxis = glConfig.maxTextureSize / tr.lightmapSize;
+	lightmapCols = MIN(4, maxLightmapsPerAxis);
+	lightmapRows = MIN(4, maxLightmapsPerAxis);
+	if(lightmapCols < 1 || lightmapRows < 1) {
+		ri.Error(ERR_DROP, "R_LoadLightmaps: no room for external lightmaps at %d pixels", tr.lightmapSize);
+	}
+
+	// Increase width first, then height, matching the BSP lightmap atlas layout.
+	while(lightmapCols * lightmapRows < numLightmaps && lightmapCols < maxLightmapsPerAxis) {
+		lightmapCols = MIN(lightmapCols * 2, maxLightmapsPerAxis);
+	}
+	while(lightmapCols * lightmapRows < numLightmaps && lightmapRows < maxLightmapsPerAxis) {
+		lightmapRows = MIN(lightmapRows * 2, maxLightmapsPerAxis);
+	}
+	if(lightmapCols * lightmapRows < numLightmaps) {
+		ri.Error(ERR_DROP, "R_LoadLightmaps: %d external lightmaps exceed the maximum atlas capacity", numLightmaps);
+	}
+
+	tr.fatLightmapCols = lightmapCols;
+	tr.fatLightmapRows = lightmapRows;
+	numLightmapsPerPage = lightmapCols * lightmapRows;
+	tr.numLightmaps = (numLightmaps + numLightmapsPerPage - 1) / numLightmapsPerPage;
+	tr.lightmaps = ri.Hunk_Alloc(tr.numLightmaps * sizeof(image_t*), h_low);
+	tr.deluxemaps = ri.Hunk_Alloc(tr.numLightmaps * sizeof(image_t*), h_low);
+
+	for(i = 0; i < tr.numLightmaps; i++) {
+		int atlasWidth = tr.fatLightmapCols * tr.lightmapSize;
+		int atlasHeight = tr.fatLightmapRows * tr.lightmapSize;
+		tr.lightmaps[i] = R_CreateImage(va("_fatlightmap%d", i), NULL, atlasWidth, atlasHeight, IMGTYPE_COLORALPHA, IMGFLAG_NOLIGHTSCALE | IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_RGBA8);
+		tr.deluxemaps[i] = R_CreateImage(va("_fatdeluxemap%d", i), NULL, atlasWidth, atlasHeight, IMGTYPE_DELUXE, IMGFLAG_NOLIGHTSCALE | IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, 0);
+	}
+
+	for(i = 0; i < numLightmaps; i++) {
+		lightmapOnPage = i % numLightmapsPerPage;
+		atlasIndex = i / numLightmapsPerPage;
+		xoff = (lightmapOnPage % tr.fatLightmapCols) * tr.lightmapSize;
+		yoff = (lightmapOnPage / tr.fatLightmapCols) * tr.lightmapSize;
+
+		Com_sprintf(lightmapPath, sizeof(lightmapPath), "maps/%s/lm_%04d.tga", s_worldData.baseName, i * 2);
+		R_LoadTGA(lightmapPath, &pic, &width, &height);
+		if(!pic) ri.Error(ERR_DROP, "R_LoadLightmaps: failed to load external lightmap %s", lightmapPath);
+		if(width != tr.lightmapSize || height != tr.lightmapSize) {
+			ri.Error(ERR_DROP, "R_LoadLightmaps: %s is %dx%d, expected %dx%d", lightmapPath, width, height, tr.lightmapSize, tr.lightmapSize);
+		}
+		for(j = 0; j < tr.lightmapSize * tr.lightmapSize; j++) pic[j * 4 + 3] = 255;
+		R_UpdateSubImage(tr.lightmaps[atlasIndex], pic, xoff, yoff, tr.lightmapSize, tr.lightmapSize, GL_RGBA8);
+		ri.Free(pic);
+
+		Com_sprintf(lightmapPath, sizeof(lightmapPath), "maps/%s/lm_%04d.tga", s_worldData.baseName, i * 2 + 1);
+		R_LoadTGA(lightmapPath, &pic, &width, &height);
+		if(!pic) ri.Error(ERR_DROP, "R_LoadLightmaps: failed to load mandatory deluxe map %s", lightmapPath);
+		if(width != tr.lightmapSize || height != tr.lightmapSize) {
+			ri.Error(ERR_DROP, "R_LoadLightmaps: deluxe map %s is %dx%d, expected %dx%d", lightmapPath, width, height, tr.lightmapSize, tr.lightmapSize);
+		}
+		for(j = 0; j < tr.lightmapSize * tr.lightmapSize; j++) {
+			byte* pixel = pic + j * 4;
+			if(pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0) pixel[0] = pixel[1] = pixel[2] = 127;
+			pixel[3] = 255;
+		}
+		R_UpdateSubImage(tr.deluxemaps[atlasIndex], pic, xoff, yoff, tr.lightmapSize, tr.lightmapSize, GL_RGBA8);
+		ri.Free(pic);
+	}
+
+	ri.Printf(PRINT_ALL, "...loaded %d external lightmap/deluxe pairs from maps/%s\n", numLightmaps, s_worldData.baseName);
+	return true;
+}
+
 static void R_LoadLightmaps(lump_t* l, lump_t* surfs) {
 	imgFlags_t imgFlags = IMGFLAG_NOLIGHTSCALE | IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE;
 	byte *buf, *buf_p;
@@ -82,6 +232,10 @@ static void R_LoadLightmaps(lump_t* l, lump_t* surfs) {
 	byte* image;
 	int i, j, numLightmaps;
 	int numLightmapsPerPage = 16;
+
+	// A map-local TGA lightmap set overrides the lightmaps embedded in the BSP.
+	// Its deluxe map is mandatory and stored at every odd file index.
+	if(R_LoadExternalLightmaps(surfs)) return;
 
 	len = l->filelen;
 	if(!len) {
@@ -1892,46 +2046,6 @@ static void R_LoadFogs(lump_t* l, lump_t* brushesLump, lump_t* sidesLump) {
 
 /*
 ================
-R_LoadLightGrid
-
-================
-*/
-void R_LoadLightGrid(lump_t* l) {
-	int i;
-	vec3_t maxs;
-	int numGridPoints;
-	world_t* w;
-	float *wMins, *wMaxs;
-
-	w = &s_worldData;
-
-	w->lightGridInverseSize[0] = 1.0f / w->lightGridSize[0];
-	w->lightGridInverseSize[1] = 1.0f / w->lightGridSize[1];
-	w->lightGridInverseSize[2] = 1.0f / w->lightGridSize[2];
-
-	wMins = w->bmodels[0].bounds[0];
-	wMaxs = w->bmodels[0].bounds[1];
-
-	for(i = 0; i < 3; i++) {
-		w->lightGridOrigin[i] = w->lightGridSize[i] * ceil(wMins[i] / w->lightGridSize[i]);
-		maxs[i] = w->lightGridSize[i] * floor(wMaxs[i] / w->lightGridSize[i]);
-		w->lightGridBounds[i] = (maxs[i] - w->lightGridOrigin[i]) / w->lightGridSize[i] + 1;
-	}
-
-	numGridPoints = w->lightGridBounds[0] * w->lightGridBounds[1] * w->lightGridBounds[2];
-
-	if(l->filelen != numGridPoints * 8) {
-		ri.Printf(PRINT_WARNING, "WARNING: light grid mismatch\n");
-		w->lightGridData = NULL;
-		return;
-	}
-
-	w->lightGridData = ri.Hunk_Alloc(l->filelen, h_low);
-	Com_Memcpy(w->lightGridData, (void*)(fileBase + l->fileofs), l->filelen);
-}
-
-/*
-================
 R_LoadEntities
 ================
 */
@@ -1942,9 +2056,6 @@ void R_LoadEntities(lump_t* l) {
 	world_t* w;
 
 	w = &s_worldData;
-	w->lightGridSize[0] = 64;
-	w->lightGridSize[1] = 64;
-	w->lightGridSize[2] = 128;
 
 	p = (char*)(fileBase + l->fileofs);
 
@@ -1986,11 +2097,6 @@ void R_LoadEntities(lump_t* l) {
 			}
 			*s++ = 0;
 			R_RemapShader(value, s, "0");
-			continue;
-		}
-		// check for a different grid size
-		if(!Q_stricmp(keyname, "gridsize")) {
-			sscanf(value, "%f %f %f", &w->lightGridSize[0], &w->lightGridSize[1], &w->lightGridSize[2]);
 			continue;
 		}
 	}
@@ -2352,6 +2458,8 @@ R_LoadMapEntitySystems
                 когда игрок не находится ни в одном display-объёме. По умолчанию
                 VOLUME_SKY — мир не рисует поверхности 3D-скайбокса (и всё, что
                 несёт бит VOLUME_SKY).
+  light       — рантайм-источники освещения динамических энтити: "origin",
+                "light" (яркость = радиус влияния), "color"/"_color"
   misc_skybox — 3D-скайбокс: "origin" "x y z", "scale" "n"
                 проход 1 рисует мир камерой skyboxOrigin + playerOrigin / scale
   func_volume — "spawnflags" "n", "addIfFull" "0/1"; каждый brush из model "*N" становится отдельной областью;
@@ -2367,6 +2475,7 @@ void R_LoadMapEntitySystems(void) {
 	static char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME];
 	int numKeys, i, pass;
 	int numVolumes, numDisplays, numPortals;
+	int numLights;
 
 	w = &s_worldData;
 
@@ -2376,12 +2485,16 @@ void R_LoadMapEntitySystems(void) {
 	numVolumes = 0;
 	numDisplays = 0;
 	numPortals = 0;
+	numLights = 0;
 	w->numPortals = 0;
 	w->portals = NULL;
 
 	w->hasSkybox = false;
 	w->skyboxScale = 16.0f;
 	VectorClear(w->skyboxOrigin);
+
+	w->numLightEnts = 0;
+	w->lightEnts = NULL;
 
 	// базовая маска-чёрный список объёмов вне display-объёмов; worldspawn может
 	// переопределить ключом "volumeflags". По умолчанию VOLUME_SKY (0x2) — мир
@@ -2395,6 +2508,8 @@ void R_LoadMapEntitySystems(void) {
 			if(numVolumes > 0) w->volumes = ri.Hunk_Alloc(numVolumes * sizeof(volumeInfo_t), h_low);
 			if(numDisplays > 0) w->displays = ri.Hunk_Alloc(numDisplays * sizeof(displayInfo_t), h_low);
 			if(numPortals > 0) w->portals = ri.Hunk_Alloc(numPortals * sizeof(portalInfo_t), h_low);
+			// таблица light-энтити для рантайм-освещения динамических моделей
+			if(numLights > 0) w->lightEnts = ri.Hunk_Alloc(numLights * sizeof(lightEnt_t), h_low);
 		}
 
 		while((numKeys = R_ParseEntityKeys(&p, keys, values)) >= 0) {
@@ -2424,6 +2539,65 @@ void R_LoadMapEntitySystems(void) {
 					w->skyboxScale = scale > 0.0f ? scale : 16.0f;
 					w->hasSkybox = true;
 					ri.Printf(PRINT_ALL, "...3D skybox at %.0f %.0f %.0f, scale %.4f\n", w->skyboxOrigin[0], w->skyboxOrigin[1], w->skyboxOrigin[2], w->skyboxScale);
+				}
+				continue;
+			}
+
+			if(!Q_stricmp(classname, "light")) {
+				// Runtime light entities. Keep Q3Map2's photon value and color
+				// normalization: `_light` takes precedence over `light`, `scale`
+				// multiplies the photons, and `_color` takes precedence over `color`.
+				if(pass == 0) {
+					numLights++;
+				} else if(w->numLightEnts < numLights && w->numLightEnts < MAX_MAP_LIGHT_ENTS) {
+					lightEnt_t* le = &w->lightEnts[w->numLightEnts];
+					const char* originValue = R_EntityValue(numKeys, keys, values, "origin");
+					const char* lightValue;
+					const char* scaleValue;
+					const char* colorValue;
+					float maxColor;
+					float lightScale;
+
+					if(!originValue) continue;  // без позиции источник бесполезен
+
+					R_ParseEntityVec3(originValue, le->origin);
+
+					lightValue = R_EntityValue(numKeys, keys, values, "_light");
+					le->brightness = lightValue ? atof(lightValue) : 0.0f;
+					if(le->brightness == 0.0f) {
+						lightValue = R_EntityValue(numKeys, keys, values, "light");
+						le->brightness = lightValue ? atof(lightValue) : 0.0f;
+					}
+					if(le->brightness == 0.0f) le->brightness = 300.0f;
+
+					scaleValue = R_EntityValue(numKeys, keys, values, "scale");
+					lightScale = scaleValue ? atof(scaleValue) : 1.0f;
+					if(lightScale == 0.0f) lightScale = 1.0f;
+					le->brightness *= lightScale;
+
+					colorValue = R_EntityValue(numKeys, keys, values, "_color");
+					if(!colorValue) colorValue = R_EntityValue(numKeys, keys, values, "color");
+					if(colorValue) {
+						sscanf(colorValue, "%f %f %f", &le->color[0], &le->color[1], &le->color[2]);
+						// цвет может быть задан в 0-255 — приводим к 0-1
+						if(le->color[0] > 1.0f || le->color[1] > 1.0f || le->color[2] > 1.0f) {
+							le->color[0] /= 255.0f;
+							le->color[1] /= 255.0f;
+							le->color[2] /= 255.0f;
+						}
+						// нормализуем по максимальной компоненте: оттенок сохраняется,
+						// яркость несёт ключ "light"
+						maxColor = MAX(MAX(le->color[0], le->color[1]), le->color[2]);
+						if(maxColor > 0.0f) {
+							VectorScale(le->color, 1.0f / maxColor, le->color);
+						} else {
+							VectorSet(le->color, 1.0f, 1.0f, 1.0f);
+						}
+					} else {
+						VectorSet(le->color, 1.0f, 1.0f, 1.0f);
+					}
+
+					w->numLightEnts++;
 				}
 				continue;
 			}
@@ -2606,6 +2780,7 @@ void R_LoadMapEntitySystems(void) {
 			w->numVolumes = 0;
 			w->numDisplays = 0;
 			w->numPortals = 0;
+			w->numLightEnts = 0;
 		}
 	}
 
@@ -2624,6 +2799,14 @@ void R_LoadMapEntitySystems(void) {
 			}
 		}
 		if(in->targetIndex < 0) ri.Printf(PRINT_WARNING, "func_portal_in target '%s' has no matching func_portal_out targetname\n", in->target);
+	}
+
+	if(numLights > w->numLightEnts) {
+		ri.Printf(PRINT_WARNING, "WARNING: %d light entities exceed MAX_MAP_LIGHT_ENTS (%d), the rest ignored\n", numLights - w->numLightEnts, MAX_MAP_LIGHT_ENTS);
+	}
+
+	if(w->numLightEnts) {
+		ri.Printf(PRINT_ALL, "...%d runtime light entities loaded\n", w->numLightEnts);
 	}
 
 	if(w->numVolumes || w->numDisplays || w->numPortals) {
@@ -3377,179 +3560,15 @@ void RE_LoadWorldMap(const char* name) {
 	R_LoadNodesAndLeafs(&header->lumps[LUMP_NODES], &header->lumps[LUMP_LEAFS]);
 	R_LoadSubmodels(&header->lumps[LUMP_MODELS], &header->lumps[LUMP_BRUSHES], &header->lumps[LUMP_BRUSHSIDES]);
 	R_LoadVisibility(&header->lumps[LUMP_VISIBILITY]);
-	R_LoadLightGrid(&header->lumps[LUMP_LIGHTGRID]);
 
-	// worldspawn volumeflags / misc_skybox / func_volume / func_display
-	// из энтити-лампы, затем разметка world-поверхностей группами объёмов
+	// worldspawn volumeflags / misc_skybox / func_volume / func_display /
+	// light-энтити из энтити-лампы, затем разметка world-поверхностей группами объёмов
 	R_LoadMapEntitySystems();
 	R_AssignVolumeFlagsToWorldSurfaces();
 	R_LoadSoundZones(&s_worldData);  // func_soundscape
 
 	// determine vertex light directions
 	R_CalcVertexLightDirs();
-
-	// determine which parts of the map are in sunlight
-	if(0) {
-		world_t* w;
-		uint8_t *primaryLightGrid, *data;
-		int lightGridSize;
-		int j;
-
-		w = &s_worldData;
-
-		lightGridSize = w->lightGridBounds[0] * w->lightGridBounds[1] * w->lightGridBounds[2];
-		primaryLightGrid = ri.Malloc(lightGridSize * sizeof(*primaryLightGrid));
-
-		memset(primaryLightGrid, 0, lightGridSize * sizeof(*primaryLightGrid));
-
-		data = w->lightGridData;
-		for(j = 0; j < lightGridSize; j++, data += 8) {
-			int lat, lng;
-			vec3_t gridLightDir, gridLightCol;
-
-			// skip samples in wall
-			if(!(data[0] + data[1] + data[2] + data[3] + data[4] + data[5])) continue;
-
-			gridLightCol[0] = ByteToFloat(data[3]);
-			gridLightCol[1] = ByteToFloat(data[4]);
-			gridLightCol[2] = ByteToFloat(data[5]);
-			(void)gridLightCol;  // Suppress unused-but-set-variable warning
-
-			lat = data[7];
-			lng = data[6];
-			lat *= (FUNCTABLE_SIZE / 256);
-			lng *= (FUNCTABLE_SIZE / 256);
-
-			// decode X as cos( lat ) * sin( long )
-			// decode Y as sin( lat ) * sin( long )
-			// decode Z as cos( long )
-
-			gridLightDir[0] = tr.sinTable[(lat + (FUNCTABLE_SIZE / 4)) & FUNCTABLE_MASK] * tr.sinTable[lng];
-			gridLightDir[1] = tr.sinTable[lat] * tr.sinTable[lng];
-			gridLightDir[2] = tr.sinTable[(lng + (FUNCTABLE_SIZE / 4)) & FUNCTABLE_MASK];
-
-			// FIXME: magic number for determining if light direction is close enough to sunlight
-			if(DotProduct(gridLightDir, tr.sunDirection) > 0.75f) {
-				primaryLightGrid[j] = 1;
-			} else {
-				primaryLightGrid[j] = 255;
-			}
-		}
-
-		if(0) {
-			int k;
-			byte* buf = ri.Malloc(w->lightGridBounds[0] * w->lightGridBounds[1] * 3 + 18);
-			byte* out;
-			uint8_t* in;
-			char fileName[MAX_QEXTENDEDPATH];
-
-			Com_Memset(buf, 0, 18);
-			buf[2] = 2;  // uncompressed type
-			buf[12] = w->lightGridBounds[0] & 255;
-			buf[13] = w->lightGridBounds[0] >> 8;
-			buf[14] = w->lightGridBounds[1] & 255;
-			buf[15] = w->lightGridBounds[1] >> 8;
-			buf[16] = 24;  // pixel size
-
-			in = primaryLightGrid;
-			for(k = 0; k < w->lightGridBounds[2]; k++) {
-				int l;
-
-				sprintf(fileName, "primarylg%d.tga", k);
-
-				out = buf + 18;
-				for(l = 0; l < w->lightGridBounds[0] * w->lightGridBounds[1]; l++) {
-					if(*in == 1) {
-						*out++ = 255;
-						*out++ = 255;
-						*out++ = 255;
-					} else if(*in == 255) {
-						*out++ = 64;
-						*out++ = 64;
-						*out++ = 64;
-					} else {
-						*out++ = 0;
-						*out++ = 0;
-						*out++ = 0;
-					}
-					in++;
-				}
-
-				ri.FS_WriteFile(fileName, buf, w->lightGridBounds[0] * w->lightGridBounds[1] * 3 + 18);
-			}
-
-			ri.Free(buf);
-		}
-
-		for(j = 0; j < w->numWorldSurfaces; j++) {
-			msurface_t* surf = w->surfaces + j;
-			cullinfo_t* ci = &surf->cullinfo;
-
-			if(ci->type & CULLINFO_PLANE) {
-				if(DotProduct(ci->plane.normal, tr.sunDirection) <= 0.0f) {
-					// ri.Printf(PRINT_ALL, "surface %d is not oriented towards sunlight\n", i);
-					continue;
-				}
-			}
-
-			if(ci->type & CULLINFO_BOX) {
-				int ibounds[2][3], x, y, z, goodSamples, numSamples;
-				vec3_t lightOrigin;
-
-				VectorSubtract(ci->bounds[0], w->lightGridOrigin, lightOrigin);
-
-				ibounds[0][0] = floor(lightOrigin[0] * w->lightGridInverseSize[0]);
-				ibounds[0][1] = floor(lightOrigin[1] * w->lightGridInverseSize[1]);
-				ibounds[0][2] = floor(lightOrigin[2] * w->lightGridInverseSize[2]);
-
-				VectorSubtract(ci->bounds[1], w->lightGridOrigin, lightOrigin);
-
-				ibounds[1][0] = ceil(lightOrigin[0] * w->lightGridInverseSize[0]);
-				ibounds[1][1] = ceil(lightOrigin[1] * w->lightGridInverseSize[1]);
-				ibounds[1][2] = ceil(lightOrigin[2] * w->lightGridInverseSize[2]);
-
-				ibounds[0][0] = CLAMP(ibounds[0][0], 0, w->lightGridSize[0]);
-				ibounds[0][1] = CLAMP(ibounds[0][1], 0, w->lightGridSize[1]);
-				ibounds[0][2] = CLAMP(ibounds[0][2], 0, w->lightGridSize[2]);
-
-				ibounds[1][0] = CLAMP(ibounds[1][0], 0, w->lightGridSize[0]);
-				ibounds[1][1] = CLAMP(ibounds[1][1], 0, w->lightGridSize[1]);
-				ibounds[1][2] = CLAMP(ibounds[1][2], 0, w->lightGridSize[2]);
-
-				/*
-				ri.Printf(PRINT_ALL, "surf %d bounds (%f %f %f)-(%f %f %f) ibounds (%d %d %d)-(%d %d %d)\n", i,
-				    ci->bounds[0][0], ci->bounds[0][1], ci->bounds[0][2],
-				    ci->bounds[1][0], ci->bounds[1][1], ci->bounds[1][2],
-				    ibounds[0][0], ibounds[0][1], ibounds[0][2],
-				    ibounds[1][0], ibounds[1][1], ibounds[1][2]);
-				*/
-
-				goodSamples = 0;
-				numSamples = 0;
-				for(x = ibounds[0][0]; x <= ibounds[1][0]; x++) {
-					for(y = ibounds[0][1]; y <= ibounds[1][1]; y++) {
-						for(z = ibounds[0][2]; z <= ibounds[1][2]; z++) {
-							uint8_t primaryLight = primaryLightGrid[x * 8 + y * 8 * w->lightGridBounds[0] + z * 8 * w->lightGridBounds[0] * w->lightGridBounds[2]];
-
-							if(primaryLight == 0) continue;
-
-							numSamples++;
-
-							if(primaryLight == 1) goodSamples++;
-						}
-					}
-				}
-
-				// FIXME: magic number for determining whether object is mostly in sunlight
-				if(goodSamples > numSamples * 0.75f) {
-					// ri.Printf(PRINT_ALL, "surface %d is in sunlight\n", i);
-					// surf->primaryLight = 1;
-				}
-			}
-		}
-
-		ri.Free(primaryLightGrid);
-	}
 
 	// load cubemaps
 	if(r_cubeReflections->integer) {
@@ -3565,8 +3584,10 @@ void RE_LoadWorldMap(const char* name) {
 
 	s_worldData.dataSize = (byte*)ri.Hunk_Alloc(0, h_low) - startMarker;
 
-	// only set tr.world now that we know the entire level has loaded properly
+	// только теперь мир считается загруженным; кэш рантайм-освещения энтити
+	// сбрасываем — слоты не должны наследовать свет предыдущей карты
 	tr.world = &s_worldData;
+	R_ResetEntityLighting();
 
 	// make sure the VAO glState entry is safe
 	R_BindNullVao();

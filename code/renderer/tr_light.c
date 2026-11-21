@@ -20,14 +20,24 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 // tr_light.c
+//
+// Единый рантайм-путь освещения динамических энтити/моделей: солнце
+// (tr.sunLight / tr.sunDirection) + light-энтити карты (classname "light")
+// + dlight-ы. Запечённый lightgrid полностью удалён.
 
 #include "tr_local.h"
 
 #define DLIGHT_AT_RADIUS 16
 // at the edge of a dlight's influence, this amount of light will be added
 
-#define DLIGHT_MINIMUM_RADIUS 16
-// never calculate a range less than this to prevent huge light numbers
+#define SUN_TRACE_DISTANCE 65536.0f
+// дальность луча от точки к солнцу (вдоль tr.sunDirection)
+
+#define SUN_TRACE_START_OFFSET 2.0f
+// старт солнечного луча на столько единиц выше точки вдоль sunDirection,
+// чтобы луч не начался внутри пола/поверхности, на которой стоит энтити
+
+static void R_ComputeRuntimeEntityLight(trRefEntity_t* ent, entityLightState_t* state);
 
 /*
 ===============
@@ -137,33 +147,483 @@ void R_DlightBmodel(bmodel_t* bmodel) {
 /*
 =============================================================================
 
-LIGHT SAMPLING
+RUNTIME ENTITY LIGHTING
+
+Единый расчёт освещения энтити на точке: вклад солнца, ближайших light-энтити
+карты (с опциональной трассировкой) и dlight-ов складывается в ambientLight /
+directedLight, направление результирующего направленного света — lightDir.
+lightgrid не используется.
 
 =============================================================================
 */
 
-extern cvar_t* r_entAmbientScale;
-extern cvar_t* r_entDirectedScale;
-extern cvar_t* r_entAmbientFromDirected;
-extern cvar_t* r_entLightContrast;
-extern cvar_t* r_entLightPivot;
+/*
+=================
+R_TraceWorld
 
-static void R_SetupEntityLightingGrid(trRefEntity_t* ent, world_t* world) {
-	vec3_t lightOrigin;
-	int pos[3];
-	int i, j;
-	byte* gridData;
-	float frac[3];
-	int gridStep[3];
+Луч через мир (только world-модель, brush-модели движков игры рендереру
+недоступны). Рендерер подгружается движком как отдельная библиотека, поэтому
+qcommon вызывается через refimport (ri.CM_BoxTrace / ri.CM_InlineModel).
+Возвращает false, если трассировка недоступна (указатели не заполнены) —
+тогда вызвавшие функции считают лучи неперекрытыми (r_entityLightTrace
+фактически выключена).
+=================
+*/
+static bool R_TraceWorld(const vec3_t start, const vec3_t end, trace_t* trace) {
+	static bool warnedMissing;
+
+	if(!ri.CM_BoxTrace || !ri.CM_InlineModel) {
+		if(!warnedMissing) {
+			warnedMissing = true;
+			ri.Printf(PRINT_WARNING, "WARNING: r_entityLightTrace disabled - refimport does not provide CM_BoxTrace/CM_InlineModel\n");
+		}
+		return false;
+	}
+
+	if(!tr.world) return false;
+
+	ri.CM_BoxTrace(trace, start, end, vec3_origin, vec3_origin, ri.CM_InlineModel(0), CONTENTS_SOLID, false);
+	return true;
+}
+
+/*
+=================
+R_LightTraceBlocked
+
+Перекрыт ли луч от энтити к источнику (light-энтити, dlight-ы) обычной
+геометрией. true — свет перекрыт.
+=================
+*/
+static bool R_LightTraceBlocked(const vec3_t start, const vec3_t end) {
+	trace_t trace;
+
+	if(!R_TraceWorld(start, end, &trace)) return false;
+	return (trace.fraction < 1.0f);
+}
+
+/*
+=================
+R_SunTraceBlocked
+
+Луч от точки к солнцу вдоль tr.sunDirection. Небо (SURF_SKY) солнцу не
+помеха: луч попадает в первый solid на своём пути, и если это sky-браш, то
+между точкой и небом обычной геометрии нет, а за скайбоксом её и не бывает —
+значит солнце достаёт до точки. Стены/крыши возвращают true.
+=================
+*/
+static bool R_SunTraceBlocked(const vec3_t point) {
+	trace_t trace;
+	vec3_t start, end;
+
+	VectorMA(point, SUN_TRACE_START_OFFSET, tr.sunDirection, start);
+	VectorMA(point, SUN_TRACE_DISTANCE, tr.sunDirection, end);
+
+	if(!R_TraceWorld(start, end, &trace)) return false;
+	if(trace.fraction >= 1.0f) return false;         // до конца луча геометрии нет
+	if(trace.surfaceFlags & SURF_SKY) return false;  // небо не перекрывает солнце
+	return true;
+}
+
+/*
+=================
+R_RuntimeLightForPoint
+
+Единый расчёт освещения в точке: солнце + light-энтити карты + dlight-ы
+(+ проход имитации подсвета r_entityExtraLight).
+Возвращает сумму вкладов в ambientLight / directedLight (шкала 0-255) и
+направление доминирующего источника lightDir (нормализован, world space).
+world — таблица light-энтити (tr.world или загружаемая карта при расчёте
+вершинных направлений), traceLights — включена ли трассировка; с ней лучи
+проводятся к солнцу (tr.sunDirection), к отобранным light-энтити и к
+dlight-ам с включёнными тенями (dl->shadows).
+Типы источников отключаются кварами: r_entityBspLights, r_entitySun,
+r_entityDlights, r_entityProjectors.
+=================
+*/
+float R_BSPLightRadius(const lightEnt_t* light) {
+	if(!light || light->brightness <= 0.0f) return 0.0f;
+
+	/* Preserve the original linear light-key-to-radius mapping. */
+	return light->brightness * r_entityLightDistance->value;
+}
+
+static float R_LinearLightFalloff(float dist, float radius) {
+	if(radius <= 0.0f || dist >= radius) return 0.0f;
+	return 1.0f - dist / radius;
+}
+
+/*
+ * selectedBspLights != NULL selects the entity path: BSP point lights are
+ * cached individually and later rendered in separate per-pixel passes.
+ * A NULL pointer preserves the aggregate behavior of the public point-light
+ * query helpers (R_LightForPoint / R_LightDirForPoint).
+ */
+static void R_RuntimeLightForPoint(world_t* world, const vec3_t point,
+	vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir, bool traceLights,
+	int* selectedBspLights, int* numSelectedBspLights) {
 	vec3_t direction;
-	float totalFactor;
-	vec3_t sunTint;
-	bool overrideSunTint;
+	vec3_t delta;
+	vec3_t sunDirected;
+	float sunDirectedLength;
+	int best[MAX_ENTITY_LIGHTS];
+	float bestDistSq[MAX_ENTITY_LIGHTS];
+	int numBest = 0;
+	int numBestMax;
+	int i, l;
 
-	sunTint[0] = r_sunLightColorR ? r_sunLightColorR->value : 0.0f;
-	sunTint[1] = r_sunLightColorG ? r_sunLightColorG->value : 0.0f;
-	sunTint[2] = r_sunLightColorB ? r_sunLightColorB->value : 0.0f;
-	overrideSunTint = (sunTint[0] != 0.0f || sunTint[1] != 0.0f || sunTint[2] != 0.0f);
+	if(numSelectedBspLights) *numSelectedBspLights = 0;
+
+	VectorClear(ambientLight);
+	VectorClear(directedLight);
+	VectorClear(direction);
+
+	/* Sun is genuinely directional, so direct and ambient scales are independent. */
+	if(r_entitySun->integer != 0) {
+		bool sunVisible = true;
+		float sunScale = r_entityLightScale->value * r_entitySunScale->value;
+		float sunAmbientScale = r_entityLightAmbScale->value * r_entitySunAmbScale->value;
+
+		if(traceLights && R_SunTraceBlocked(point)) sunVisible = false;
+		if(sunVisible) {
+			VectorScale(tr.sunLight, sunScale, sunDirected);
+			sunDirectedLength = VectorLength(sunDirected);
+			if(sunDirectedLength > 0.0f) {
+				VectorAdd(directedLight, sunDirected, directedLight);
+				VectorMA(direction, sunDirectedLength, tr.sunDirection, direction);
+			}
+			if(sunAmbientScale != 0.0f) {
+				VectorMA(ambientLight, sunAmbientScale, tr.sunLight, ambientLight);
+			}
+		}
+	}
+
+	/*
+	 * BSP point lights: select up to r_entityLightNum nearest lights within
+	 * the linear influence radius (brightness * r_entityLightDistance).
+	 * Entity rendering stores indices and draws each source independently;
+	 * query helpers still receive an aggregate.
+	 */
+	numBestMax = Com_Clamp(0, MAX_ENTITY_LIGHTS, r_entityLightNum->integer);
+	if(r_entityBspLights->integer != 0 && world && world->numLightEnts &&
+		world->lightEnts && numBestMax > 0) {
+		for(l = 0; l < world->numLightEnts; l++) {
+			lightEnt_t* le = &world->lightEnts[l];
+			float radius = R_BSPLightRadius(le);
+			float distSq;
+			int j;
+
+			if(radius <= 0.0f) continue;
+
+			VectorSubtract(le->origin, point, delta);
+			distSq = VectorLengthSquared(delta);
+			if(distSq >= radius * radius) continue;
+
+			if(numBest == 0) {
+				numBest = 1;
+				best[0] = l;
+				bestDistSq[0] = distSq;
+				continue;
+			}
+			if(numBest >= numBestMax && distSq >= bestDistSq[numBest - 1]) continue;
+			j = numBest < numBestMax ? numBest++ : numBest - 1;
+			while(j > 0 && bestDistSq[j - 1] > distSq) {
+				bestDistSq[j] = bestDistSq[j - 1];
+				best[j] = best[j - 1];
+				j--;
+			}
+			bestDistSq[j] = distSq;
+			best[j] = l;
+		}
+
+		for(i = 0; i < numBest; i++) {
+			lightEnt_t* le = &world->lightEnts[best[i]];
+			float distSq = bestDistSq[i];
+			float dist = sqrtf(distSq);
+			float radius = R_BSPLightRadius(le);
+			float photons = le->brightness;
+			float ambientScale = r_entityLightAmbScale->value * r_entityBSPLightAmbScale->value;
+			float directScale = r_entityLightScale->value * r_entityBSPLightScale->value;
+			float falloff;
+
+			if(radius <= 0.0f || dist >= radius) continue;
+			falloff = R_LinearLightFalloff(dist, radius);
+			if(falloff <= 0.0f) continue;
+			if(traceLights && R_LightTraceBlocked(point, le->origin)) continue;
+
+			if(selectedBspLights) {
+				if(numSelectedBspLights && *numSelectedBspLights < MAX_ENTITY_LIGHTS) {
+					selectedBspLights[*numSelectedBspLights] = best[i];
+					(*numSelectedBspLights)++;
+				}
+			} else if(directScale != 0.0f) {
+				vec3_t contribution;
+				float weight;
+
+				VectorScale(le->color, photons * falloff * directScale, contribution);
+				VectorAdd(directedLight, contribution, directedLight);
+
+				weight = VectorLength(contribution);
+				if(weight > 0.0f && dist > 0.001f) {
+					VectorSubtract(le->origin, point, delta);
+					VectorScale(delta, 1.0f / dist, delta);
+					VectorMA(direction, weight, delta, direction);
+				}
+			}
+
+			if(ambientScale != 0.0f) {
+				vec3_t ambientContribution;
+				VectorScale(le->color, photons * falloff * ambientScale, ambientContribution);
+				VectorAdd(ambientLight, ambientContribution, ambientLight);
+			}
+		}
+	}
+
+	/*
+	 * Dynamic lights also contribute a separate entity-lightmap tint.
+	 * Their native per-pixel shader pass is rendered independently in
+	 * ForwardDlightEnt(), including projector cookies and dynamic 3D shadows.
+	 * These toggles/scales affect only this cached entity-lighting contribution.
+	 */
+	for(l = 0; l < tr.refdef.num_dlights && l < MAX_DLIGHTS; l++) {
+		dlight_t* dl = &tr.refdef.dlights[l];
+		float dist, falloff, ambientScale, lightScale;
+		vec3_t contribution;
+
+		if(dl->radius <= 0.0f) continue;
+		if(dl->type == DLIGHT_PROJECTOR) {
+			if(r_entityProjectors->integer == 0) continue;
+			lightScale = r_entityProjectorScale->value;
+		} else {
+			if(r_entityDlights->integer == 0) continue;
+			lightScale = r_entityDlightScale->value;
+		}
+		if(lightScale <= 0.0f) continue;
+
+		if(dl->type == DLIGHT_PROJECTOR) {
+			vec3_t toPoint, forward;
+			float forwardDistance, radialSq, coneRadius;
+
+			VectorSubtract(point, dl->origin, toPoint);
+			VectorCopy(dl->forward, forward);
+			VectorNormalize(forward);
+			forwardDistance = DotProduct(toPoint, forward);
+			if(forwardDistance <= 0.0f) continue;
+			radialSq = VectorLengthSquared(toPoint) - forwardDistance * forwardDistance;
+			coneRadius = Com_Clamp(0.0f, dl->radius, forwardDistance) * dl->coneTangent;
+			if(radialSq > coneRadius * coneRadius) continue;
+		}
+
+		VectorSubtract(dl->origin, point, delta);
+		dist = VectorLength(delta);
+		if(dist >= dl->radius) continue;
+		falloff = 1.0f - dist / dl->radius;
+		if(falloff <= 0.0f) continue;
+
+		if(dl->shadows && traceLights && R_LightTraceBlocked(point, dl->origin)) continue;
+
+		ambientScale = r_entityLightAmbScale->value * lightScale *
+			(dl->type == DLIGHT_PROJECTOR ? r_entityProjectorAmbScale->value : r_entityDlightAmbScale->value);
+		if(ambientScale != 0.0f) {
+			VectorScale(dl->color,
+				dl->intensity * 255.0f * falloff * ambientScale, contribution);
+			VectorAdd(ambientLight, contribution, ambientLight);
+		}
+
+		/* Legacy query mode: keep directed output for non-entity callers. */
+		if(!selectedBspLights) {
+			float directScale = r_entityLightScale->value * lightScale;
+			if(directScale != 0.0f) {
+				float weight;
+				VectorScale(dl->color, dl->intensity * 255.0f * falloff * directScale, contribution);
+				VectorAdd(directedLight, contribution, directedLight);
+				weight = VectorLength(contribution);
+				if(weight > 0.0f && dist > 0.001f) {
+					VectorScale(delta, 1.0f / dist, delta);
+					VectorMA(direction, weight, delta, direction);
+				}
+			}
+		}
+	}
+
+	/*
+	 * Extra light is a cheap ambient bounce approximation. It never creates
+	 * another fake dominant direction; distance and intensity stay independent.
+	 */
+	if(r_entityExtraLight->value > 0.0f && r_entityExtraLightScale->value != 0.0f) {
+		float extraDistance = r_entityExtraLight->value;
+		float extraScale = r_entityExtraLightScale->value;
+		float distSq, dist, radius, falloff, contributionValue;
+		vec3_t contribution;
+
+		if(r_entityBspLights->integer != 0 && world && world->lightEnts) {
+			for(l = 0; l < world->numLightEnts; l++) {
+				lightEnt_t* le = &world->lightEnts[l];
+				radius = R_BSPLightRadius(le) * extraDistance;
+				if(radius <= 0.0f) continue;
+
+				VectorSubtract(le->origin, point, delta);
+				distSq = VectorLengthSquared(delta);
+				if(distSq >= radius * radius) continue;
+				dist = sqrtf(distSq);
+				falloff = R_LinearLightFalloff(dist, radius);
+				if(falloff <= 0.0f) continue;
+
+				contributionValue = le->brightness * falloff *
+					extraScale * r_entityLightAmbScale->value * r_entityBSPLightAmbScale->value;
+				VectorScale(le->color, contributionValue, contribution);
+				VectorAdd(ambientLight, contribution, ambientLight);
+			}
+		}
+
+		if(r_entityDlights->integer != 0) {
+			for(l = 0; l < tr.refdef.num_dlights && l < MAX_DLIGHTS; l++) {
+				dlight_t* dl = &tr.refdef.dlights[l];
+
+				if(dl->type != DLIGHT_POINT || dl->radius <= 0.0f) continue;
+				radius = dl->radius * extraDistance;
+				VectorSubtract(dl->origin, point, delta);
+				distSq = VectorLengthSquared(delta);
+				if(distSq >= radius * radius) continue;
+
+				dist = sqrtf(distSq);
+				falloff = R_LinearLightFalloff(dist, radius);
+				if(falloff <= 0.0f) continue;
+
+				contributionValue = (dl->intensity * 255.0f) * falloff *
+					extraScale * r_entityLightAmbScale->value * r_entityDlightAmbScale->value *
+					r_entityDlightScale->value;
+				VectorScale(dl->color, contributionValue, contribution);
+				VectorAdd(ambientLight, contribution, ambientLight);
+			}
+		}
+	}
+
+	if(!VectorNormalize2(direction, lightDir)) {
+		VectorCopy(tr.sunDirection, lightDir);
+	}
+}
+
+/*
+=================
+R_ResetEntityLighting
+
+Сброс кэша рантайм-освещения: при R_Init и загрузке новой карты, чтобы слоты
+не наследовали свет предыдущей сцены.
+=================
+*/
+void R_ResetEntityLighting(void) {
+	int i;
+
+	for(i = 0; i < MAX_REFENTITIES; i++) {
+		tr.entityLightStates[i].frame = -1;
+		tr.entityLightStates[i].numBspLights = 0;
+	}
+	tr.entityLightBudget = 0;
+	tr.entityLightCursor = 0;
+}
+
+/*
+=================
+R_EntityLightingCvarsChanged
+
+Entity lighting values are cached per entity. Invalidate the cache when any
+runtime-light cvar changes so tint toggles and scales take effect immediately
+instead of waiting for the round-robin refresh budget.
+=================
+*/
+static bool R_EntityLightingCvarsChanged(void) {
+	cvar_t* lightCvars[] = {
+		r_entityLightTrace,
+		r_entityLightNum,
+		r_entityLightDistance,
+		r_entityLightScale,
+		r_entityLightAmbScale,
+		r_entityDlightScale,
+		r_entityDlightAmbScale,
+		r_entityProjectorScale,
+		r_entityProjectorAmbScale,
+		r_entitySunScale,
+		r_entitySunAmbScale,
+		r_entityBSPLightScale,
+		r_entityBSPLightAmbScale,
+		r_entityBspLights,
+		r_entitySun,
+		r_entityDlights,
+		r_entityProjectors,
+		r_entityExtraLight,
+		r_entityExtraLightScale
+	};
+	int i;
+	bool changed = false;
+
+	for(i = 0; i < ARRAY_LEN(lightCvars); i++) {
+		if(lightCvars[i] && lightCvars[i]->modified) {
+			lightCvars[i]->modified = false;
+			changed = true;
+		}
+	}
+
+	return changed;
+}
+
+/*
+=================
+R_UpdateEntityLighting
+
+Round-robin бюджет: один раз за RE_RenderScene пересчитываем максимум
+r_entityFrameCount энтити; курсор сдвигается по списку энтити сцены, так что
+каждая энтитя получает свежий свет поочерёдно. Энтити, чей слот ещё никогда
+не считался (frame < 0), считаются вне бюджета — первый кадр не бывает чёрным.
+=================
+*/
+void R_UpdateEntityLighting(void) {
+	trRefdef_t* refdef = &tr.refdef;
+	int numEntities, start, k, i;
+
+	if(R_EntityLightingCvarsChanged()) {
+		for(i = 0; i < MAX_REFENTITIES; i++) {
+			tr.entityLightStates[i].frame = -1;
+		}
+	}
+
+	tr.entityLightBudget = Com_Clamp(0, MAX_REFENTITIES, r_entityFrameCount->integer);
+
+	if(refdef->rdflags & RDF_NOWORLDMODEL) return;  // превью моделей без мира
+
+	numEntities = refdef->num_entities;
+	if(numEntities <= 0) return;
+
+	start = tr.entityLightCursor % numEntities;
+	for(k = 0; k < numEntities; k++) {
+		int slot = (start + k) % numEntities;
+		trRefEntity_t* ent = &refdef->entities[slot];
+		entityLightState_t* state = &tr.entityLightStates[slot];
+
+		if(ent->e.reType != RT_MODEL) continue;      // спрайты/лучи свет не запрашивают
+		if(state->frame == tr.frameCount) continue;  // уже посчитана в этом кадре
+
+		if(state->frame < 0) {
+			// первый расчёт слота — вне бюджета, чтобы первый кадр не был чёрным
+		} else {
+			// round-robin: при исчерпании бюджета останавливаем расчёт до следующего кадра
+			if(tr.entityLightBudget <= 0) break;
+			tr.entityLightBudget--;
+		}
+
+		R_ComputeRuntimeEntityLight(ent, state);
+	}
+	tr.entityLightCursor = (start + k) % numEntities;
+}
+
+/*
+=================
+R_ComputeRuntimeEntityLight
+
+Заполняет кэш-слот энтити значениями единого рантайм-расчёта.
+=================
+*/
+static void R_ComputeRuntimeEntityLight(trRefEntity_t* ent, entityLightState_t* state) {
+	vec3_t lightOrigin;
 
 	if(ent->e.renderfx & RF_LIGHTING_ORIGIN) {
 		VectorCopy(ent->e.lightingOrigin, lightOrigin);
@@ -171,174 +631,24 @@ static void R_SetupEntityLightingGrid(trRefEntity_t* ent, world_t* world) {
 		VectorCopy(ent->e.origin, lightOrigin);
 	}
 
-	VectorSubtract(lightOrigin, world->lightGridOrigin, lightOrigin);
-	for(i = 0; i < 3; i++) {
-		float v;
+	R_RuntimeLightForPoint(tr.world, lightOrigin, state->ambientLight, state->directedLight,
+		state->lightDir, (r_entityLightTrace->integer != 0),
+		state->bspLightIndices, &state->numBspLights);
 
-		v = lightOrigin[i] * world->lightGridInverseSize[i];
-		pos[i] = floor(v);
-		frac[i] = v - pos[i];
-		if(pos[i] < 0) {
-			pos[i] = 0;
-		} else if(pos[i] > world->lightGridBounds[i] - 1) {
-			pos[i] = world->lightGridBounds[i] - 1;
-		}
-	}
-
-	VectorClear(ent->ambientLight);
-	VectorClear(ent->directedLight);
-	VectorClear(direction);
-
-	assert(world->lightGridData);  // NULL with -nolight maps
-
-	// trilerp the light value
-	gridStep[0] = 8;
-	gridStep[1] = 8 * world->lightGridBounds[0];
-	gridStep[2] = 8 * world->lightGridBounds[0] * world->lightGridBounds[1];
-	gridData = world->lightGridData + pos[0] * gridStep[0] + pos[1] * gridStep[1] + pos[2] * gridStep[2];
-
-	totalFactor = 0;
-	for(i = 0; i < 8; i++) {
-		float factor;
-		byte* data;
-		int lat, lng;
-		vec3_t normal;
-		bool sunSample;
-		factor = 1.0;
-		data = gridData;
-		for(j = 0; j < 3; j++) {
-			if(i & (1 << j)) {
-				if(pos[j] + 1 > world->lightGridBounds[j] - 1) {
-					break;  // ignore values outside lightgrid
-				}
-				factor *= frac[j];
-				data += gridStep[j];
-			} else {
-				factor *= (1.0f - frac[j]);
-			}
-		}
-
-		if(j != 3) {
-			continue;
-		}
-
-		if(world->lightGrid16) {
-			uint16_t* data16 = world->lightGrid16 + (int)(data - world->lightGridData) / 8 * 6;
-			if(!(data16[0] + data16[1] + data16[2] + data16[3] + data16[4] + data16[5])) {
-				continue;  // ignore samples in walls
-			}
-		} else {
-			if(!(data[0] + data[1] + data[2] + data[3] + data[4] + data[5])) {
-				continue;  // ignore samples in walls
-			}
-		}
-		lat = data[7];
-		lng = data[6];
-		lat *= (FUNCTABLE_SIZE / 256);
-		lng *= (FUNCTABLE_SIZE / 256);
-
-		// Only samples whose baked direction matches the map sun are modified.
-		// Other lightgrid entries (lamps, emissive lights, etc.) stay untouched.
-		normal[0] = tr.sinTable[(lat + (FUNCTABLE_SIZE / 4)) & FUNCTABLE_MASK] * tr.sinTable[lng];
-		normal[1] = tr.sinTable[lat] * tr.sinTable[lng];
-		normal[2] = tr.sinTable[(lng + (FUNCTABLE_SIZE / 4)) & FUNCTABLE_MASK];
-		sunSample = (DotProduct(normal, tr.sunDirectionBase) > 0.75f);
-		if(sunSample) VectorCopy(tr.sunDirection, normal);
-
-		totalFactor += factor;
-
-		if(world->lightGrid16) {
-			// FIXME: this is hideous
-			uint16_t* data16 = world->lightGrid16 + (int)(data - world->lightGridData) / 8 * 6;
-
-			ent->ambientLight[0] += factor * data16[0] / 257.0f;
-			ent->ambientLight[1] += factor * data16[1] / 257.0f;
-			ent->ambientLight[2] += factor * data16[2] / 257.0f;
-
-			ent->directedLight[0] += factor * data16[3] / 257.0f * ((sunSample && overrideSunTint) ? sunTint[0] : 1.0f);
-			ent->directedLight[1] += factor * data16[4] / 257.0f * ((sunSample && overrideSunTint) ? sunTint[1] : 1.0f);
-			ent->directedLight[2] += factor * data16[5] / 257.0f * ((sunSample && overrideSunTint) ? sunTint[2] : 1.0f);
-		} else {
-			ent->ambientLight[0] += factor * data[0];
-			ent->ambientLight[1] += factor * data[1];
-			ent->ambientLight[2] += factor * data[2];
-
-			ent->directedLight[0] += factor * data[3] * ((sunSample && overrideSunTint) ? sunTint[0] : 1.0f);
-			ent->directedLight[1] += factor * data[4] * ((sunSample && overrideSunTint) ? sunTint[1] : 1.0f);
-			ent->directedLight[2] += factor * data[5] * ((sunSample && overrideSunTint) ? sunTint[2] : 1.0f);
-		}
-		VectorMA(direction, factor, normal, direction);
-	}
-
-	if(totalFactor > 0 && totalFactor < 0.99) {
-		totalFactor = 1.0f / totalFactor;
-		VectorScale(ent->ambientLight, totalFactor, ent->ambientLight);
-		VectorScale(ent->directedLight, totalFactor, ent->directedLight);
-	}
-
-	VectorScale(ent->ambientLight, r_entAmbientScale->value, ent->ambientLight);
-	VectorScale(ent->directedLight, r_entDirectedScale->value * r_entAmbientScale->value, ent->directedLight);
-
-	VectorNormalize2(direction, ent->lightDir);
+	state->frame = tr.frameCount;
 }
 
 /*
 =================
-R_SetupEntityLighting
+R_FinishEntityLighting
 
-Calculates all the lighting values that will be used
-by the Calc_* functions
+Общая финализация: clamp 0-255, преобразование направления в модельное
+пространство.
 =================
 */
-void R_SetupEntityLighting(const trRefdef_t* refdef, trRefEntity_t* ent) {
-	float d;
+static void R_FinishEntityLighting(trRefEntity_t* ent) {
 	vec3_t lightDir;
-
-	// lighting calculations
-	if(ent->lightingCalculated) {
-		return;
-	}
-	ent->lightingCalculated = true;
-
-	// Sample baked world lighting. A missing lightgrid in a real world means
-	// there is no baked illumination; do not make entities self-lit in darkness.
-	if(!(refdef->rdflags & RDF_NOWORLDMODEL) && tr.world && tr.world->lightGridData) {
-		R_SetupEntityLightingGrid(ent, tr.world);
-	} else if(refdef->rdflags & RDF_NOWORLDMODEL) {
-		// Keep the legacy preview/menu fallback for standalone model scenes.
-		ent->ambientLight[0] = ent->ambientLight[1] = ent->ambientLight[2] = tr.identityLight * 150;
-		ent->directedLight[0] = ent->directedLight[1] = ent->directedLight[2] = tr.identityLight * 150;
-		VectorCopy(tr.sunDirection, ent->lightDir);
-	} else {
-		VectorClear(ent->ambientLight);
-		VectorClear(ent->directedLight);
-		VectorCopy(tr.sunDirection, ent->lightDir);
-	}
-
-	if(!(refdef->rdflags & RDF_NOWORLDMODEL)) {
-		float contrast = r_entLightContrast->value;
-		float pivot = r_entLightPivot->value;
-
-		// 1) contrast around the pivot level (1 = off)
-		if(contrast != 1.0f && pivot > 1.0f) {
-			float r = ent->ambientLight[0] + ent->directedLight[0];
-			float g = ent->ambientLight[1] + ent->directedLight[1];
-			float b = ent->ambientLight[2] + ent->directedLight[2];
-			float lum = 0.299f * r + 0.587f * g + 0.114f * b;
-			float f = powf(MAX(lum, 1.0f) / pivot, contrast - 1.0f);
-
-			VectorScale(ent->ambientLight, f, ent->ambientLight);
-			VectorScale(ent->directedLight, f, ent->directedLight);
-		}
-
-		// 2) extra ambient derived from the directed light
-		VectorMA(ent->ambientLight, r_entAmbientFromDirected->value, ent->directedLight, ent->ambientLight);
-	}
-
-	// Dynamic lights are added in the additive per-pixel pass. Keeping them
-	// out of this single-point entity sample prevents unshadowed model glow.
-	d = VectorLength(ent->directedLight);
-	VectorScale(ent->lightDir, d, lightDir);
+	float d;
 
 	// clamp lights
 	{
@@ -371,6 +681,9 @@ void R_SetupEntityLighting(const trRefdef_t* refdef, trRefEntity_t* ent) {
 		}
 	}
 
+	d = VectorLength(ent->directedLight);
+	VectorScale(ent->lightDir, d, lightDir);
+
 	// transform the direction to local space
 	VectorNormalize(lightDir);
 	ent->modelLightDir[0] = DotProduct(lightDir, ent->e.axis[0]);
@@ -382,37 +695,93 @@ void R_SetupEntityLighting(const trRefdef_t* refdef, trRefEntity_t* ent) {
 
 /*
 =================
+R_ApplyEntityLighting
+
+Копирует кэш-слот в энтитю. BSP point lights остаются отдельными
+источниками и рендерятся per-pixel аддитивными проходами.
+=================
+*/
+static void R_ApplyEntityLighting(trRefEntity_t* ent, const entityLightState_t* state) {
+	VectorCopy(state->ambientLight, ent->ambientLight);
+	VectorCopy(state->directedLight, ent->directedLight);
+	VectorCopy(state->lightDir, ent->lightDir);
+	ent->numBspLights = state->numBspLights;
+	if(ent->numBspLights > 0) {
+		memcpy(ent->bspLightIndices, state->bspLightIndices,
+			ent->numBspLights * sizeof(ent->bspLightIndices[0]));
+	}
+
+	R_FinishEntityLighting(ent);
+}
+
+/*
+=================
+R_SetupEntityLighting
+
+Calculates all the lighting values that will be used
+by the Calc_* functions
+=================
+*/
+void R_SetupEntityLighting(const trRefdef_t* refdef, trRefEntity_t* ent) {
+	// lighting calculations
+	if(ent->lightingCalculated) {
+		return;
+	}
+	ent->lightingCalculated = true;
+
+	if(!(refdef->rdflags & RDF_NOWORLDMODEL)) {
+		int slot = ent - refdef->entities;
+
+		if(slot >= 0 && slot < refdef->num_entities) {
+			entityLightState_t* state = &tr.entityLightStates[slot];
+
+			if(state->frame != tr.frameCount && tr.entityLightBudget > 0) {
+				// страховая ветка для энтити, не покрытых pre-pass'ом
+				// (суб-виды кубмап/зеркал): бюджет общий с round-robin
+				R_ComputeRuntimeEntityLight(ent, state);
+				tr.entityLightBudget--;
+			}
+
+			R_ApplyEntityLighting(ent, state);
+			return;
+		}
+	}
+
+	// Keep the legacy preview/menu fallback for standalone model scenes.
+	ent->ambientLight[0] = ent->ambientLight[1] = ent->ambientLight[2] = tr.identityLight * 150;
+	ent->directedLight[0] = ent->directedLight[1] = ent->directedLight[2] = tr.identityLight * 150;
+	VectorCopy(tr.sunDirection, ent->lightDir);
+	ent->numBspLights = 0;
+
+	R_FinishEntityLighting(ent);
+}
+
+/*
+=================
 R_LightForPoint
 =================
 */
 int R_LightForPoint(vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir) {
-	trRefEntity_t ent;
+	if(!tr.world) return false;
+	if(!tr.world->numLightEnts && VectorLengthSquared(tr.sunLight) <= 0.0f) return false;
 
-	if(tr.world->lightGridData == NULL) return false;
-
-	Com_Memset(&ent, 0, sizeof(ent));
-	VectorCopy(point, ent.e.origin);
-	R_SetupEntityLightingGrid(&ent, tr.world);
-	VectorCopy(ent.ambientLight, ambientLight);
-	VectorCopy(ent.directedLight, directedLight);
-	VectorCopy(ent.lightDir, lightDir);
+	R_RuntimeLightForPoint(tr.world, point, ambientLight, directedLight, lightDir,
+		(r_entityLightTrace->integer != 0), NULL, NULL);
 
 	return true;
 }
 
 int R_LightDirForPoint(vec3_t point, vec3_t lightDir, vec3_t normal, world_t* world) {
-	trRefEntity_t ent;
+	vec3_t ambientLight, directedLight;
 
-	if(world->lightGridData == NULL) return false;
+	if(!world) return false;
 
-	Com_Memset(&ent, 0, sizeof(ent));
-	VectorCopy(point, ent.e.origin);
-	R_SetupEntityLightingGrid(&ent, world);
+	// вершинные направления мира считаются на загрузке: трассировка до
+	// light-энтити здесь слишком дорога, направление берётся без трассировки
+	R_RuntimeLightForPoint(world, point, ambientLight, directedLight, lightDir, false, NULL, NULL);
 
-	if(DotProduct(ent.lightDir, normal) > 0.2f)
-		VectorCopy(ent.lightDir, lightDir);
-	else
-		VectorCopy(normal, lightDir);
+	// направление, смотрящее сквозь поверхность, заменяется её нормалью
+	if(DotProduct(lightDir, normal) <= 0.2f) VectorCopy(normal, lightDir);
 
 	return true;
 }

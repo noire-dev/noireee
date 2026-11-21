@@ -442,12 +442,18 @@ void main()
 	L = var_LightDir.xyz;
 	L += (texture2D(u_DeluxeMap, var_TexCoords.zw).xyz - vec3(0.5)) * u_EnableTextures.y;
 	float sqrLightDist = dot(L, L);
-	L /= sqrt(sqrLightDist);
+	L /= sqrt(max(sqrLightDist, 0.000001));
 
   #if defined(USE_LIGHT_VECTOR)
-	attenuation  = CalcLightAttenuation(float(var_LightDir.w > 0.0), var_LightDir.w / sqrLightDist);
+    #if defined(USE_LINEAR_ATTENUATION)
+	// Legacy linear falloff. var_LightDir.w stores the squared light radius.
+	attenuation = (var_LightDir.w > 0.0 && sqrLightDist < var_LightDir.w)
+		? (1.0 - sqrt(sqrLightDist / var_LightDir.w)) : 0.0;
+    #else
+	attenuation = CalcLightAttenuation(float(var_LightDir.w > 0.0), var_LightDir.w / sqrLightDist);
+    #endif
   #else
-	attenuation  = 1.0;
+	attenuation = 1.0;
   #endif
 
     #if defined(SWIZZLE_NORMALMAP)

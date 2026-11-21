@@ -2236,59 +2236,59 @@ void R_RenderSunShadowMaps(const refdef_t* fd, int level) {
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 		} else {
-			// use light grid size as level size
+			// use world bounds for the whole-map cascade
 			// FIXME: could be tighter
 			vec3_t bounds;
+			vec3_t worldOrigin;
 
-			bounds[0] = tr.world->lightGridSize[0] * tr.world->lightGridBounds[0];
-			bounds[1] = tr.world->lightGridSize[1] * tr.world->lightGridBounds[1];
-			bounds[2] = tr.world->lightGridSize[2] * tr.world->lightGridBounds[2];
+			VectorCopy(tr.world->bmodels[0].bounds[0], worldOrigin);
+			VectorSubtract(tr.world->bmodels[0].bounds[1], tr.world->bmodels[0].bounds[0], bounds);
 
-			point[0] = tr.world->lightGridOrigin[0];
-			point[1] = tr.world->lightGridOrigin[1];
-			point[2] = tr.world->lightGridOrigin[2];
+			point[0] = worldOrigin[0];
+			point[1] = worldOrigin[1];
+			point[2] = worldOrigin[2];
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 
-			point[0] = tr.world->lightGridOrigin[0] + bounds[0];
-			point[1] = tr.world->lightGridOrigin[1];
-			point[2] = tr.world->lightGridOrigin[2];
+			point[0] = worldOrigin[0] + bounds[0];
+			point[1] = worldOrigin[1];
+			point[2] = worldOrigin[2];
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 
-			point[0] = tr.world->lightGridOrigin[0];
-			point[1] = tr.world->lightGridOrigin[1] + bounds[1];
-			point[2] = tr.world->lightGridOrigin[2];
+			point[0] = worldOrigin[0];
+			point[1] = worldOrigin[1] + bounds[1];
+			point[2] = worldOrigin[2];
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 
-			point[0] = tr.world->lightGridOrigin[0] + bounds[0];
-			point[1] = tr.world->lightGridOrigin[1] + bounds[1];
-			point[2] = tr.world->lightGridOrigin[2];
+			point[0] = worldOrigin[0] + bounds[0];
+			point[1] = worldOrigin[1] + bounds[1];
+			point[2] = worldOrigin[2];
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 
-			point[0] = tr.world->lightGridOrigin[0];
-			point[1] = tr.world->lightGridOrigin[1];
-			point[2] = tr.world->lightGridOrigin[2] + bounds[2];
+			point[0] = worldOrigin[0];
+			point[1] = worldOrigin[1];
+			point[2] = worldOrigin[2] + bounds[2];
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 
-			point[0] = tr.world->lightGridOrigin[0] + bounds[0];
-			point[1] = tr.world->lightGridOrigin[1];
-			point[2] = tr.world->lightGridOrigin[2] + bounds[2];
+			point[0] = worldOrigin[0] + bounds[0];
+			point[1] = worldOrigin[1];
+			point[2] = worldOrigin[2] + bounds[2];
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 
-			point[0] = tr.world->lightGridOrigin[0];
-			point[1] = tr.world->lightGridOrigin[1] + bounds[1];
-			point[2] = tr.world->lightGridOrigin[2] + bounds[2];
+			point[0] = worldOrigin[0];
+			point[1] = worldOrigin[1] + bounds[1];
+			point[2] = worldOrigin[2] + bounds[2];
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 
-			point[0] = tr.world->lightGridOrigin[0] + bounds[0];
-			point[1] = tr.world->lightGridOrigin[1] + bounds[1];
-			point[2] = tr.world->lightGridOrigin[2] + bounds[2];
+			point[0] = worldOrigin[0] + bounds[0];
+			point[1] = worldOrigin[1] + bounds[1];
+			point[2] = worldOrigin[2] + bounds[2];
 			Mat4Transform(lightViewMatrix, point, lightViewPoint);
 			AddPointToBounds(lightViewPoint, lightviewBounds[0], lightviewBounds[1]);
 		}

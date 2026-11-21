@@ -128,19 +128,65 @@ typedef struct dlight_s {
 	vec3_t transformed;  // origin in local coordinate system
 } dlight_t;
 
-// a trRefEntity_t has all the information passed in by
-// the client game, as well as some locally derived info
+// runtime light entity, parsed from the map entity lump (classname "light").
+// Brightness follows Q3Map2's `_light`/`light` + `scale` entity keys.
+typedef struct {
+	vec3_t origin;
+	vec3_t color;      // normalized, max component = 1
+	float brightness;  // photons, Q3Map2 point-light intensity
+} lightEnt_t;
+
+#define MAX_ENTITY_LIGHTS 32
+
+// Persistent lighting state per scene entity slot. Recomputed round-robin
+// (r_entityFrameCount entities per frame). BSP point lights remain separate;
+// they are rendered as per-pixel additive passes, not collapsed into one vector.
+typedef struct {
+	vec3_t ambientLight;
+	vec3_t directedLight;
+	vec3_t lightDir;
+	int numBspLights;
+	int bspLightIndices[MAX_ENTITY_LIGHTS];
+	int frame;
+} entityLightState_t;
+
+// A trRefEntity has the information passed by the client game and locally
+// derived lighting data.
 typedef struct {
 	refEntity_t e;
 
-	dlightMask_t needDlights;  // 256-bit mask of dynamic lights affecting this entity
+	dlightMask_t needDlights;
 	bool lightingCalculated;
-	bool mirrored;         // mirrored matrix, needs reversed culling
-	vec3_t lightDir;       // normalized direction towards light, in world space
-	vec3_t modelLightDir;  // normalized direction towards light, in model space
-	vec3_t ambientLight;   // color normalized to 0-255
+	bool mirrored;
+	vec3_t lightDir;
+	vec3_t modelLightDir;
+	vec3_t ambientLight;
 	vec3_t directedLight;
+	int numBspLights;
+	int bspLightIndices[MAX_ENTITY_LIGHTS];
 } trRefEntity_t;
+
+// Runtime entity-light controls.
+extern cvar_t* r_entityLightTrace;
+extern cvar_t* r_entityLightNum;
+extern cvar_t* r_entityLightDistance;
+extern cvar_t* r_entityLightScale;
+extern cvar_t* r_entityLightAmbScale;
+extern cvar_t* r_entityDlightScale;
+extern cvar_t* r_entityDlightAmbScale;
+extern cvar_t* r_entityProjectorScale;
+extern cvar_t* r_entityProjectorAmbScale;
+extern cvar_t* r_entitySunScale;
+extern cvar_t* r_entitySunAmbScale;
+extern cvar_t* r_entityBSPLightScale;
+extern cvar_t* r_entityBSPLightAmbScale;
+extern cvar_t* r_entityBspLights;
+extern cvar_t* r_entitySun;
+extern cvar_t* r_entityDlights;
+extern cvar_t* r_entityProjectors;
+extern cvar_t* r_entityExtraLight;
+extern cvar_t* r_entityExtraLightScale;
+extern cvar_t* r_entityFrameCount;
 
 // per-entity per-joint scale override requested from cgame
 #define MAX_RENDER_BONESCALES 32
@@ -299,8 +345,8 @@ typedef enum {
 	CGEN_ONE_MINUS_ENTITY,   // grabbed from 1 - entity.modulate
 	CGEN_EXACT_VERTEX,       // tess.vertexColors
 	CGEN_VERTEX,             // tess.vertexColors * tr.identityLight
-	CGEN_EXACT_VERTEX_LIT,   // like CGEN_EXACT_VERTEX but takes a light direction from the lightgrid
-	CGEN_VERTEX_LIT,         // like CGEN_VERTEX but takes a light direction from the lightgrid
+	CGEN_EXACT_VERTEX_LIT,   // like CGEN_EXACT_VERTEX but takes a light direction from the runtime entity lighting
+	CGEN_VERTEX_LIT,         // like CGEN_VERTEX but takes a light direction from the runtime entity lighting
 	CGEN_ONE_MINUS_VERTEX,
 	CGEN_WAVEFORM,        // programmatically generated
 	CGEN_COLOR_WAVEFORM,  // constant RGB color multiplied times waveform
@@ -577,7 +623,7 @@ enum {
 	DLIGHTDEF_COUNT = 0x0002,
 };
 
-enum { LIGHTDEF_USE_LIGHTMAP = 0x0001, LIGHTDEF_USE_LIGHT_VECTOR = 0x0002, LIGHTDEF_USE_LIGHT_VERTEX = 0x0003, LIGHTDEF_LIGHTTYPE_MASK = 0x0003, LIGHTDEF_ENTITY_VERTEX_ANIMATION = 0x0004, LIGHTDEF_USE_TCGEN_AND_TCMOD = 0x0008, LIGHTDEF_USE_PARALLAXMAP = 0x0010, LIGHTDEF_USE_SHADOWMAP = 0x0020, LIGHTDEF_ENTITY_BONE_ANIMATION = 0x0040, LIGHTDEF_USE_DLIGHT_PROJECTOR = 0x0080, LIGHTDEF_ALL = 0x00FF, LIGHTDEF_COUNT = 0x0100 };
+enum { LIGHTDEF_USE_LIGHTMAP = 0x0001, LIGHTDEF_USE_LIGHT_VECTOR = 0x0002, LIGHTDEF_USE_LIGHT_VERTEX = 0x0003, LIGHTDEF_LIGHTTYPE_MASK = 0x0003, LIGHTDEF_ENTITY_VERTEX_ANIMATION = 0x0004, LIGHTDEF_USE_TCGEN_AND_TCMOD = 0x0008, LIGHTDEF_USE_PARALLAXMAP = 0x0010, LIGHTDEF_USE_SHADOWMAP = 0x0020, LIGHTDEF_ENTITY_BONE_ANIMATION = 0x0040, LIGHTDEF_USE_DLIGHT_PROJECTOR = 0x0080, LIGHTDEF_USE_LINEAR_ATTENUATION = 0x0100, LIGHTDEF_ALL = 0x01FF, LIGHTDEF_COUNT = 0x0200 };
 
 enum { SHADOWMAPDEF_USE_VERTEX_ANIMATION = 0x0001, SHADOWMAPDEF_USE_BONE_ANIMATION = 0x0002, SHADOWMAPDEF_ALL = 0x0003, SHADOWMAPDEF_COUNT = 0x0004 };
 
@@ -1478,12 +1524,10 @@ typedef struct {
 	// не находится ни в одном display-объёме; по умолчанию VOLUME_SKY
 	unsigned baseVolumeFlags;
 
-	vec3_t lightGridOrigin;
-	vec3_t lightGridSize;
-	vec3_t lightGridInverseSize;
-	int lightGridBounds[3];
-	byte* lightGridData;
-	uint16_t* lightGrid16;
+	// единый рантайм-путь освещения динамических энтити: таблица light-энтити
+	// карты (classname "light") заполняется при загрузке BSP вместо lightgrid
+	int numLightEnts;
+	lightEnt_t* lightEnts;
 
 	int numClusters;
 	int clusterBytes;
@@ -1967,6 +2011,13 @@ typedef struct {
 	float sawToothTable[FUNCTABLE_SIZE];
 	float inverseSawToothTable[FUNCTABLE_SIZE];
 	float fogTable[FOG_TABLE_SIZE];
+
+	// единый рантайм-путь освещения энтити (солнце + light-энтити + dlight),
+	// заменивший запечённый lightgrid. Бюджет пересчёта — r_entityFrameCount
+	// энтити за кадр по round-robin
+	entityLightState_t entityLightStates[MAX_REFENTITIES];
+	int entityLightBudget;  // осталось пересчётов в текущем кадре
+	int entityLightCursor;  // позиция round-robin по списку энтити сцены
 } trGlobals_t;
 
 extern backEndState_t backEnd;
@@ -2173,6 +2224,7 @@ void R_LoadMapEntitySystems(void);
 
 // разбор энтити-лампы карты (tr_bsp.c), общий для всех func_* систем
 #define MAX_MAP_ENTITY_KEYS 256
+#define MAX_MAP_LIGHT_ENTS 4096  // предел таблицы light-энтити карты
 #define MAX_MAP_ENTITY_VALUENAME 256
 int R_ParseEntityKeys(char** p, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME]);
 const char* R_EntityValue(int numKeys, char keys[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], char values[MAX_MAP_ENTITY_KEYS][MAX_MAP_ENTITY_VALUENAME], const char* key);
@@ -2429,6 +2481,9 @@ LIGHTS
 
 void R_DlightBmodel(bmodel_t* bmodel);
 void R_SetupEntityLighting(const trRefdef_t* refdef, trRefEntity_t* ent);
+void R_UpdateEntityLighting(void);  // round-robin budget per RE_RenderScene
+void R_ResetEntityLighting(void);   // invalidate the cache on R_Init / map load
+float R_BSPLightRadius(const lightEnt_t* light);
 void R_TransformDlights(int count, dlight_t* dl, orientationr_t* or);
 dlightMask_t R_DlightEntityMask(const vec3_t bounds[2]);
 int R_LightForPoint(vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir);

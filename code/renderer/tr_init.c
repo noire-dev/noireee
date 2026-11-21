@@ -169,12 +169,26 @@ cvar_t* r_subdivisions;
 cvar_t* r_fullscreen;
 cvar_t* r_noborder;
 
-cvar_t* r_entAmbientScale;
-cvar_t* r_entDirectedScale;
-cvar_t* r_entAmbientFromDirected;
-cvar_t* r_entLightContrast;
-cvar_t* r_entLightPivot;
-cvar_t* r_entGridLeakRatio;
+cvar_t* r_entityLightTrace;
+cvar_t* r_entityLightNum;
+cvar_t* r_entityLightDistance;
+cvar_t* r_entityLightScale;
+cvar_t* r_entityLightAmbScale;
+cvar_t* r_entityDlightScale;
+cvar_t* r_entityDlightAmbScale;
+cvar_t* r_entityProjectorScale;
+cvar_t* r_entityProjectorAmbScale;
+cvar_t* r_entitySunScale;
+cvar_t* r_entitySunAmbScale;
+cvar_t* r_entityBSPLightScale;
+cvar_t* r_entityBSPLightAmbScale;
+cvar_t* r_entityBspLights;
+cvar_t* r_entitySun;
+cvar_t* r_entityDlights;
+cvar_t* r_entityProjectors;
+cvar_t* r_entityExtraLight;
+cvar_t* r_entityExtraLightScale;
+cvar_t* r_entityFrameCount;
 
 cvar_t* r_debugSort;
 
@@ -989,12 +1003,86 @@ void R_Register(void) {
 	r_gamma = ri.Cvar_Get("r_gamma", "1", CVAR_ARCHIVE);
 	r_renderScale = ri.Cvar_Get("r_renderScale", "100", CVAR_ARCHIVE);
 
-	r_entAmbientScale = ri.Cvar_Get("r_entAmbientScale", "0.16", CVAR_CHEAT);
-	r_entDirectedScale = ri.Cvar_Get("r_entDirectedScale", "1.00", CVAR_CHEAT);
-	r_entAmbientFromDirected = ri.Cvar_Get("r_entAmbientFromDirected", "0.64", CVAR_ARCHIVE);
-	r_entLightContrast = ri.Cvar_Get("r_entLightContrast", "1.5", CVAR_ARCHIVE);
-	r_entLightPivot = ri.Cvar_Get("r_entLightPivot", "100", CVAR_ARCHIVE);
-	r_entGridLeakRatio = ri.Cvar_Get("r_entGridLeakRatio", "3.0", CVAR_ARCHIVE);
+	// Runtime entity lighting: global scales are multiplied by per-source scales.
+	r_entityLightTrace = ri.Cvar_Get("r_entityLightTrace", "1", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityLightTrace, 0, 1, true);
+	ri.Cvar_SetDescription(r_entityLightTrace, "Trace line of sight from entity lighting origins to light sources");
+
+	r_entityLightNum = ri.Cvar_Get("r_entityLightNum", "4", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityLightNum, 0, MAX_ENTITY_LIGHTS, true);
+	ri.Cvar_SetDescription(r_entityLightNum, "Maximum number of nearest BSP light entities affecting one entity");
+
+	r_entityLightDistance = ri.Cvar_Get("r_entityLightDistance", "1.0", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityLightDistance, 0.0f, 64.0f, false);
+	ri.Cvar_SetDescription(r_entityLightDistance, "Global distance multiplier for runtime BSP entity lights");
+
+	r_entityLightScale = ri.Cvar_Get("r_entityLightScale", "1.0", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityLightScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityLightScale, "Global direct-light multiplier for all runtime entity light types");
+
+	r_entityLightAmbScale = ri.Cvar_Get("r_entityLightAmbScale", "1.0", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityLightAmbScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityLightAmbScale, "Global ambient-light multiplier for all runtime entity light types");
+
+	r_entityDlightScale = ri.Cvar_Get("r_entityDlightScale", "1.0", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityDlightScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityDlightScale, "Overall runtime entity tint multiplier for point dynamic lights; does not affect native shader lights or 3D shadows");
+
+	r_entityDlightAmbScale = ri.Cvar_Get("r_entityDlightAmbScale", "0.35", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityDlightAmbScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityDlightAmbScale, "Ambient multiplier for point dynamic-light tint in the runtime entity-lighting system");
+
+	r_entityProjectorScale = ri.Cvar_Get("r_entityProjectorScale", "1.0", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityProjectorScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityProjectorScale, "Overall runtime entity tint multiplier for projectors; does not affect native projector shaders, cookies or 3D shadows");
+
+	r_entityProjectorAmbScale = ri.Cvar_Get("r_entityProjectorAmbScale", "0.35", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityProjectorAmbScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityProjectorAmbScale, "Ambient multiplier for projector tint in the runtime entity-lighting system");
+
+	r_entitySunScale = ri.Cvar_Get("r_entitySunScale", "1.0", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entitySunScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entitySunScale, "Direct-light multiplier for sunlight");
+
+	r_entitySunAmbScale = ri.Cvar_Get("r_entitySunAmbScale", "0.40", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entitySunAmbScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entitySunAmbScale, "Ambient-light multiplier for sunlight");
+
+	r_entityBSPLightScale = ri.Cvar_Get("r_entityBSPLightScale", "1.0", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityBSPLightScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityBSPLightScale, "Direct-light multiplier for BSP light entities");
+
+	r_entityBSPLightAmbScale = ri.Cvar_Get("r_entityBSPLightAmbScale", "0.30", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityBSPLightAmbScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityBSPLightAmbScale, "Ambient-light multiplier for BSP light entities");
+
+	r_entityBspLights = ri.Cvar_Get("r_entityBspLights", "1", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityBspLights, 0, 1, true);
+	ri.Cvar_SetDescription(r_entityBspLights, "Enable BSP map light entities in runtime entity lighting");
+
+	r_entitySun = ri.Cvar_Get("r_entitySun", "1", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entitySun, 0, 1, true);
+	ri.Cvar_SetDescription(r_entitySun, "Enable sunlight in runtime entity lighting");
+
+	r_entityDlights = ri.Cvar_Get("r_entityDlights", "1", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityDlights, 0, 1, true);
+	ri.Cvar_SetDescription(r_entityDlights, "Enable point dynamic-light tint in runtime entity lightmap; native shader lighting and 3D shadows remain enabled");
+
+	r_entityProjectors = ri.Cvar_Get("r_entityProjectors", "1", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityProjectors, 0, 1, true);
+	ri.Cvar_SetDescription(r_entityProjectors, "Enable projector tint in runtime entity lightmap; native projector shaders, cookies and 3D shadows remain enabled");
+
+	r_entityExtraLight = ri.Cvar_Get("r_entityExtraLight", "1.0", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityExtraLight, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityExtraLight, "Distance multiplier for the extra ambient bounce approximation (0 disables it)");
+
+	r_entityExtraLightScale = ri.Cvar_Get("r_entityExtraLightScale", "0.25", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityExtraLightScale, 0.0f, 16.0f, false);
+	ri.Cvar_SetDescription(r_entityExtraLightScale, "Intensity multiplier for the extra ambient bounce approximation");
+
+	r_entityFrameCount = ri.Cvar_Get("r_entityFrameCount", "32", CVAR_ARCHIVE);
+	ri.Cvar_CheckRange(r_entityFrameCount, 0, 1024, true);
+	ri.Cvar_SetDescription(r_entityFrameCount, "Max entities per frame getting runtime lighting recomputed (round-robin)");
 
 	// temporary variables that can change at any time
 	r_debugSort = ri.Cvar_Get("r_debugSort", "0", CVAR_CHEAT);
@@ -1055,6 +1143,7 @@ void R_Init(void) {
 	Com_Memset(&tr, 0, sizeof(tr));
 	Com_Memset(&backEnd, 0, sizeof(backEnd));
 	Com_Memset(&tess, 0, sizeof(tess));
+	R_ResetEntityLighting();  // кэш рантайм-освещения энтити: пометить слоты невалидными
 
 	if(sizeof(glconfig_t) != 11312) ri.Error(ERR_FATAL, "Mod ABI incompatible: sizeof(glconfig_t) == %u != 11312", (unsigned int)sizeof(glconfig_t));
 

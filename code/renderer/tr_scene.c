@@ -971,6 +971,10 @@ void RE_RenderScene(const refdef_t* fd) {
 	// hair / cloth: step the jiggle simulation of this scene's entities
 	R_JiggleUpdateScene();
 
+	// единый рантайм-путь освещения энтити: round-robin бюджет пересчёта
+	// (r_entityFrameCount энтити за кадр) до начала построения drawsurf'ов
+	R_UpdateEntityLighting();
+
 	// SmileTheory: playing with shadow mapping
 	if(!(fd->rdflags & RDF_NOWORLDMODEL) && tr.refdef.num_dlights && r_dynamicLight->integer >= 2) {
 		R_RenderDlightCubemaps(fd);
